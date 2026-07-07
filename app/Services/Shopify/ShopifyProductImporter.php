@@ -7,6 +7,7 @@ use App\Enums\SyncJobItemStatus;
 use App\Enums\SyncJobStatus;
 use App\Enums\VarleExportStatus;
 use App\Exceptions\Shopify\ShopifyGraphQlException;
+use App\Exceptions\Shopify\ShopifyImportCancelledException;
 use App\Models\InventoryLevel;
 use App\Models\Product;
 use App\Models\ProductImage;
@@ -39,27 +40,63 @@ class ShopifyProductImporter
 
     private int $unpublishedProductsCount = 0;
 
+    private ShopifyImportOptions $options;
+
+    private int $currentProductIndex = 0;
+
+    private int $variantsForCurrentProduct = 0;
+
     public function __construct(
         private readonly ShopifyClient $client,
-    ) {}
+    ) {
+        $this->options = new ShopifyImportOptions;
+    }
 
-    public function import(): ShopifyImportResult
+    public function import(?ShopifyImportOptions $options = null): ShopifyImportResult
     {
+        $this->options = $options ?? new ShopifyImportOptions;
         $this->resetCounters();
 
         $source = $this->resolveSource();
         $syncJob = $this->startSyncJob();
+        $finalized = false;
 
         try {
             foreach ($this->fetchProductPages() as $products) {
-                $syncJob->increment('total_items', count($products));
+                $this->assertNotCancelled($syncJob);
 
                 foreach ($products as $productPayload) {
+                    $this->assertNotCancelled($syncJob);
+
+                    if ($this->hasReachedImportLimit()) {
+                        break 2;
+                    }
+
+                    $this->currentProductIndex++;
+                    $this->variantsForCurrentProduct = 0;
+                    $this->updateSyncJobProgress($syncJob, $productPayload, 'starting');
                     $this->importProduct($source, $syncJob, $productPayload);
+                    $this->updateSyncJobProgress($syncJob, $productPayload, 'done');
+                    $this->emitProgress($syncJob, $productPayload, 'done');
                 }
             }
 
             $this->finishSyncJob($syncJob);
+            $finalized = true;
+
+            return new ShopifyImportResult(
+                syncJobId: $syncJob->id,
+                productsImported: $this->productsImported,
+                variantsImported: $this->variantsImported,
+                failedItems: $this->failedItems,
+                newProductsCount: $this->newProductsCount,
+                updatedProductsCount: $this->updatedProductsCount,
+                pendingReviewProductsCount: $this->pendingReviewProductsCount,
+                unpublishedProductsCount: $this->unpublishedProductsCount,
+            );
+        } catch (ShopifyImportCancelledException $exception) {
+            $this->cancelSyncJob($syncJob, $exception->getMessage());
+            $finalized = true;
 
             return new ShopifyImportResult(
                 syncJobId: $syncJob->id,
@@ -73,8 +110,16 @@ class ShopifyProductImporter
             );
         } catch (Throwable $exception) {
             $this->failSyncJob($syncJob, $exception);
+            $finalized = true;
 
             throw $exception;
+        } finally {
+            if (! $finalized && $syncJob->fresh()?->status === SyncJobStatus::Running) {
+                $this->failSyncJob(
+                    $syncJob,
+                    new \RuntimeException('Import process exited while sync job was still running.'),
+                );
+            }
         }
     }
 
@@ -83,13 +128,24 @@ class ShopifyProductImporter
      */
     private function fetchProductPages(): \Generator
     {
+        if (filled($this->options->handle)) {
+            yield $this->fetchProductsByHandle((string) $this->options->handle);
+
+            return;
+        }
+
         $cursor = null;
 
         do {
+            $this->assertNotCancelled($this->runningSyncJob());
+
             try {
                 $response = $this->client->query(
                     $this->productsQuery(),
-                    ['cursor' => $cursor],
+                    [
+                        'cursor' => $cursor,
+                        'query' => 'status:active',
+                    ],
                 );
             } catch (ShopifyGraphQlException $exception) {
                 throw $exception->withQueryCostGuidance();
@@ -104,13 +160,66 @@ class ShopifyProductImporter
             $nodes = $connection['nodes'] ?? [];
 
             if (is_array($nodes) && $nodes !== []) {
-                yield $nodes;
+                if ($this->options->limit !== null) {
+                    $remaining = $this->options->limit - $this->currentProductIndex;
+                    $nodes = array_slice($nodes, 0, max(0, $remaining));
+                }
+
+                if ($nodes !== []) {
+                    yield $nodes;
+                }
+            }
+
+            if ($this->hasReachedImportLimit()) {
+                break;
             }
 
             $pageInfo = $connection['pageInfo'] ?? [];
             $hasNextPage = (bool) ($pageInfo['hasNextPage'] ?? false);
             $cursor = $hasNextPage ? ($pageInfo['endCursor'] ?? null) : null;
         } while ($cursor !== null);
+    }
+
+    /**
+     * @return array<int, array<string, mixed>>
+     */
+    private function fetchProductsByHandle(string $handle): array
+    {
+        try {
+            $response = $this->client->query(
+                $this->productsQuery(),
+                [
+                    'cursor' => null,
+                    'query' => 'handle:'.$handle,
+                ],
+            );
+        } catch (ShopifyGraphQlException $exception) {
+            throw $exception->withQueryCostGuidance();
+        }
+
+        $nodes = data_get($response, 'data.products.nodes', []);
+
+        return is_array($nodes) ? $nodes : [];
+    }
+
+    private ?SyncJob $activeSyncJob = null;
+
+    private function runningSyncJob(): SyncJob
+    {
+        if ($this->activeSyncJob === null) {
+            throw new \RuntimeException('Sync job has not been started.');
+        }
+
+        return $this->activeSyncJob;
+    }
+
+    private function assertNotCancelled(SyncJob $syncJob): void
+    {
+        $syncJob->refresh();
+
+        if ($syncJob->cancel_requested_at !== null) {
+            throw new ShopifyImportCancelledException('Shopify import cancellation was requested.');
+        }
     }
 
     /**
@@ -127,11 +236,15 @@ class ShopifyProductImporter
         }
 
         try {
-            $importResult = DB::transaction(function () use ($source, $productPayload, $externalId): array {
+            $this->updateSyncJobProgress($syncJob, $productPayload, 'variants');
+
+            $importResult = DB::transaction(function () use ($source, $productPayload, $externalId, $syncJob): array {
                 $result = $this->upsertProduct($source, $productPayload, $externalId);
                 $product = $result['product'];
-                $this->syncVariants($product, (string) ($productPayload['id'] ?? ''));
+                $this->syncVariants($product, (string) ($productPayload['id'] ?? ''), $syncJob, $productPayload);
+                $this->updateSyncJobProgress($syncJob, $productPayload, 'images');
                 $this->syncImages($product, $productPayload);
+                $this->updateSyncJobProgress($syncJob, $productPayload, 'categories');
                 $this->syncSourceCategories($source, $product, $productPayload);
 
                 return $result;
@@ -215,6 +328,8 @@ class ShopifyProductImporter
         $cursor = null;
 
         do {
+            $this->assertNotCancelled($this->runningSyncJob());
+
             try {
                 $response = $this->client->query(
                     $this->productVariantsQuery(),
@@ -252,8 +367,15 @@ class ShopifyProductImporter
         return $variants;
     }
 
-    private function syncVariants(Product $product, string $shopifyProductGid): void
-    {
+    /**
+     * @param  array<string, mixed>  $productPayload
+     */
+    private function syncVariants(
+        Product $product,
+        string $shopifyProductGid,
+        SyncJob $syncJob,
+        array $productPayload,
+    ): void {
         if ($shopifyProductGid === '') {
             return;
         }
@@ -262,6 +384,8 @@ class ShopifyProductImporter
             $variant = $this->upsertVariant($product, $variantPayload);
             $this->syncInventory($variant, $variantPayload);
             $this->variantsImported++;
+            $this->variantsForCurrentProduct++;
+            $this->updateSyncJobProgress($syncJob, $productPayload, 'variants');
         }
     }
 
@@ -508,15 +632,82 @@ class ShopifyProductImporter
 
     private function startSyncJob(): SyncJob
     {
-        return SyncJob::query()->create([
+        $this->activeSyncJob = SyncJob::query()->create([
             'type' => 'import',
             'source' => 'shopify',
             'status' => SyncJobStatus::Running,
             'started_at' => now(),
+            'heartbeat_at' => now(),
+            'process_id' => getmypid() ?: null,
             'context' => [
                 'shop' => config('shopify.shop'),
+                'limit' => $this->options->limit,
+                'handle' => $this->options->handle,
+                'stage' => 'starting',
             ],
         ]);
+
+        return $this->activeSyncJob;
+    }
+
+    /**
+     * @param  array<string, mixed>  $productPayload
+     */
+    private function updateSyncJobProgress(SyncJob $syncJob, array $productPayload, string $stage): void
+    {
+        $attempted = $this->productsImported + $this->failedItems + ($stage === 'starting' ? 0 : 0);
+
+        $syncJob->update([
+            'total_items' => max($syncJob->total_items, $this->currentProductIndex),
+            'success_items' => $this->productsImported,
+            'failed_items' => $this->failedItems,
+            'heartbeat_at' => now(),
+            'process_id' => getmypid() ?: $syncJob->process_id,
+            'context' => array_merge($syncJob->context ?? [], [
+                'current_product_handle' => (string) ($productPayload['handle'] ?? ''),
+                'current_product_index' => $this->currentProductIndex,
+                'stage' => $stage,
+                'last_progress_at' => now()->toIso8601String(),
+                'variants_for_current_product' => $this->variantsForCurrentProduct,
+            ]),
+        ]);
+    }
+
+    /**
+     * @param  array<string, mixed>  $productPayload
+     */
+    private function emitProgress(SyncJob $syncJob, array $productPayload, string $stage): void
+    {
+        if (! $this->options->verbose || $this->options->progressCallback === null) {
+            return;
+        }
+
+        ($this->options->progressCallback)(
+            $this->currentProductIndex,
+            $this->progressTotalLabel(),
+            (string) ($productPayload['handle'] ?? 'unknown'),
+            $this->variantsForCurrentProduct,
+            $stage,
+        );
+    }
+
+    private function progressTotalLabel(): string
+    {
+        if ($this->options->limit !== null) {
+            return (string) $this->options->limit;
+        }
+
+        if (filled($this->options->handle)) {
+            return '1';
+        }
+
+        return '?';
+    }
+
+    private function hasReachedImportLimit(): bool
+    {
+        return $this->options->limit !== null
+            && $this->currentProductIndex >= $this->options->limit;
     }
 
     private function finishSyncJob(SyncJob $syncJob): void
@@ -531,6 +722,9 @@ class ShopifyProductImporter
             'status' => $status,
             'finished_at' => now(),
             'failed_items' => $this->failedItems,
+            'success_items' => $this->productsImported,
+            'total_items' => max($syncJob->total_items, $this->currentProductIndex),
+            'heartbeat_at' => now(),
             'context' => array_merge($syncJob->context ?? [], [
                 'products_imported' => $this->productsImported,
                 'variants_imported' => $this->variantsImported,
@@ -540,6 +734,35 @@ class ShopifyProductImporter
                 'updated_products_count' => $this->updatedProductsCount,
                 'pending_review_products_count' => $this->pendingReviewProductsCount,
                 'unpublished_products_count' => $this->unpublishedProductsCount,
+                'stage' => 'finished',
+                'last_progress_at' => now()->toIso8601String(),
+            ]),
+        ]);
+    }
+
+    private function cancelSyncJob(SyncJob $syncJob, string $message): void
+    {
+        $syncJob->update([
+            'status' => SyncJobStatus::Cancelled,
+            'cancelled_at' => now(),
+            'finished_at' => now(),
+            'failed_items' => $this->failedItems,
+            'success_items' => $this->productsImported,
+            'total_items' => max($syncJob->total_items, $this->currentProductIndex),
+            'error_message' => $message,
+            'heartbeat_at' => now(),
+            'context' => array_merge($syncJob->context ?? [], [
+                'products_imported' => $this->productsImported,
+                'variants_imported' => $this->variantsImported,
+                'images_imported' => $this->imagesImported,
+                'failed_items' => $this->failedItems,
+                'new_products_count' => $this->newProductsCount,
+                'updated_products_count' => $this->updatedProductsCount,
+                'pending_review_products_count' => $this->pendingReviewProductsCount,
+                'unpublished_products_count' => $this->unpublishedProductsCount,
+                'exception_message' => $message,
+                'stage' => 'cancelled',
+                'last_progress_at' => now()->toIso8601String(),
             ]),
         ]);
     }
@@ -550,7 +773,10 @@ class ShopifyProductImporter
             'status' => SyncJobStatus::Failed,
             'finished_at' => now(),
             'failed_items' => $this->failedItems,
+            'success_items' => $this->productsImported,
+            'total_items' => max($syncJob->total_items, $this->currentProductIndex),
             'error_message' => $exception->getMessage(),
+            'heartbeat_at' => now(),
             'context' => array_merge($syncJob->context ?? [], [
                 'products_imported' => $this->productsImported,
                 'variants_imported' => $this->variantsImported,
@@ -560,6 +786,10 @@ class ShopifyProductImporter
                 'updated_products_count' => $this->updatedProductsCount,
                 'pending_review_products_count' => $this->pendingReviewProductsCount,
                 'unpublished_products_count' => $this->unpublishedProductsCount,
+                'exception_message' => $exception->getMessage(),
+                'exception_class' => $exception::class,
+                'stage' => 'failed',
+                'last_progress_at' => now()->toIso8601String(),
             ]),
         ]);
     }
@@ -593,6 +823,7 @@ class ShopifyProductImporter
 
         $syncJob->increment('failed_items');
         $this->failedItems++;
+        $this->updateSyncJobProgress($syncJob, $payload ?? [], 'failed');
     }
 
     /**
@@ -710,6 +941,9 @@ class ShopifyProductImporter
         $this->updatedProductsCount = 0;
         $this->pendingReviewProductsCount = 0;
         $this->unpublishedProductsCount = 0;
+        $this->currentProductIndex = 0;
+        $this->variantsForCurrentProduct = 0;
+        $this->activeSyncJob = null;
     }
 
     private function productsQuery(): string
@@ -719,8 +953,8 @@ class ShopifyProductImporter
         $collectionPageSize = (int) config('shopify.collection_page_size', 20);
 
         return <<<GRAPHQL
-        query ImportActiveProducts(\$cursor: String) {
-          products(first: {$productPageSize}, after: \$cursor, query: "status:active") {
+        query ImportActiveProducts(\$cursor: String, \$query: String) {
+          products(first: {$productPageSize}, after: \$cursor, query: \$query) {
             pageInfo {
               hasNextPage
               endCursor

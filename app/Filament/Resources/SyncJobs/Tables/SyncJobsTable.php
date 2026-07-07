@@ -3,6 +3,7 @@
 namespace App\Filament\Resources\SyncJobs\Tables;
 
 use App\Enums\SyncJobStatus;
+use App\Filament\Resources\SyncJobs\Actions\CancelSyncJobAction;
 use App\Filament\Resources\SyncJobs\Actions\DownloadFailedCsvAction;
 use Filament\Actions\BulkActionGroup;
 use Filament\Actions\DeleteBulkAction;
@@ -42,6 +43,21 @@ class SyncJobsTable
                     ->label('Failed')
                     ->sortable()
                     ->color(fn (int $state): string => $state > 0 ? 'danger' : 'gray'),
+                TextColumn::make('process_id')
+                    ->label('PID')
+                    ->toggleable(isToggledHiddenByDefault: true),
+                TextColumn::make('heartbeat_at')
+                    ->dateTime()
+                    ->sortable()
+                    ->toggleable(),
+                TextColumn::make('context.current_product_handle')
+                    ->label('Current product')
+                    ->toggleable()
+                    ->placeholder('—'),
+                TextColumn::make('context.stage')
+                    ->label('Stage')
+                    ->badge()
+                    ->toggleable(),
                 TextColumn::make('started_at')
                     ->dateTime()
                     ->sortable(),
@@ -58,6 +74,7 @@ class SyncJobsTable
                     ->query(fn (Builder $query): Builder => $query->where('status', SyncJobStatus::Failed)),
             ])
             ->recordActions([
+                CancelSyncJobAction::make(),
                 DownloadFailedCsvAction::make(),
                 EditAction::make(),
             ])

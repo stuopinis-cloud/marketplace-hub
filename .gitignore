@@ -33,3 +33,9 @@ Thumbs.db
 /vendor
 /node_modules
 /storage/*.key
+
+# Python / local tool environments
+eb-invoice-generator/.venv/
+.venv/
+__pycache__/
+*.pyc

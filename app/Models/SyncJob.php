@@ -18,6 +18,10 @@ class SyncJob extends Model
         'failed_items',
         'started_at',
         'finished_at',
+        'cancel_requested_at',
+        'cancelled_at',
+        'heartbeat_at',
+        'process_id',
         'error_message',
         'context',
     ];
@@ -31,6 +35,10 @@ class SyncJob extends Model
             'failed_items' => 'integer',
             'started_at' => 'datetime',
             'finished_at' => 'datetime',
+            'cancel_requested_at' => 'datetime',
+            'cancelled_at' => 'datetime',
+            'heartbeat_at' => 'datetime',
+            'process_id' => 'integer',
             'context' => 'array',
         ];
     }

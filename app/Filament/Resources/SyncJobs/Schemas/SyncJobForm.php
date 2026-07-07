@@ -3,8 +3,10 @@
 namespace App\Filament\Resources\SyncJobs\Schemas;
 
 use App\Enums\SyncJobStatus;
+use App\Models\SyncJob;
 use Filament\Forms\Components\DateTimePicker;
 use Filament\Forms\Components\KeyValue;
+use Filament\Forms\Components\Placeholder;
 use Filament\Forms\Components\Select;
 use Filament\Forms\Components\Textarea;
 use Filament\Forms\Components\TextInput;
@@ -37,8 +39,30 @@ class SyncJobForm
                 TextInput::make('failed_items')
                     ->numeric()
                     ->default(0),
+                TextInput::make('process_id')
+                    ->label('Process ID')
+                    ->disabled()
+                    ->dehydrated(false),
                 DateTimePicker::make('started_at'),
                 DateTimePicker::make('finished_at'),
+                DateTimePicker::make('heartbeat_at')
+                    ->disabled()
+                    ->dehydrated(false),
+                DateTimePicker::make('cancel_requested_at')
+                    ->disabled()
+                    ->dehydrated(false),
+                DateTimePicker::make('cancelled_at')
+                    ->disabled()
+                    ->dehydrated(false),
+                Placeholder::make('current_product_handle')
+                    ->label('Current product handle')
+                    ->content(fn (?SyncJob $record): string => (string) data_get($record?->context, 'current_product_handle', '—')),
+                Placeholder::make('current_stage')
+                    ->label('Current stage')
+                    ->content(fn (?SyncJob $record): string => (string) data_get($record?->context, 'stage', '—')),
+                Placeholder::make('current_product_index')
+                    ->label('Current product index')
+                    ->content(fn (?SyncJob $record): string => (string) data_get($record?->context, 'current_product_index', '—')),
                 Textarea::make('error_message')
                     ->columnSpanFull()
                     ->rows(4),

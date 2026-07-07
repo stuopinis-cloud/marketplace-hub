@@ -15,6 +15,7 @@ use App\Models\Source;
 use App\Models\SyncJob;
 use App\Models\SyncJobItem;
 use App\Services\Shopify\ShopifyClient;
+use App\Services\Shopify\ShopifyImportOptions;
 use App\Services\Shopify\ShopifyProductImporter;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Mockery\MockInterface;
@@ -380,6 +381,112 @@ class ShopifyProductImporterTest extends TestCase
         $this->assertSame(VarleExportStatus::Include, $product->varle_export_status);
         $this->assertSame(0, $result->newProductsCount);
         $this->assertSame(1, $result->updatedProductsCount);
+    }
+
+    public function test_importer_respects_limit_option(): void
+    {
+        $this->mockProductImportSequence([
+            ShopifyProductFixtures::productsResponse([
+                ShopifyProductFixtures::product(['id' => 'gid://shopify/Product/1001', 'handle' => 'one']),
+                ShopifyProductFixtures::product(['id' => 'gid://shopify/Product/1002', 'handle' => 'two']),
+                ShopifyProductFixtures::product(['id' => 'gid://shopify/Product/1003', 'handle' => 'three']),
+            ]),
+            ShopifyProductFixtures::productVariantsResponse([
+                ShopifyProductFixtures::variant(['id' => 'gid://shopify/ProductVariant/2001']),
+            ]),
+            ShopifyProductFixtures::productVariantsResponse([
+                ShopifyProductFixtures::variant(['id' => 'gid://shopify/ProductVariant/2002']),
+            ]),
+        ]);
+
+        $result = $this->makeImporter()->import(new ShopifyImportOptions(limit: 2));
+
+        $this->assertSame(2, $result->productsImported);
+        $this->assertSame(2, Product::query()->count());
+    }
+
+    public function test_importer_respects_handle_option(): void
+    {
+        $this->mock(ShopifyClient::class, function (MockInterface $mock): void {
+            $mock->shouldReceive('query')
+                ->once()
+                ->withArgs(function (string $query, array $variables): bool {
+                    return str_contains($query, 'ImportActiveProducts')
+                        && ($variables['query'] ?? null) === 'handle:single-handle';
+                })
+                ->andReturn(
+                    ShopifyProductFixtures::productsResponse([
+                        ShopifyProductFixtures::product(['handle' => 'single-handle']),
+                    ]),
+                );
+
+            $mock->shouldReceive('query')
+                ->once()
+                ->andReturn(
+                    ShopifyProductFixtures::productVariantsResponse([
+                        ShopifyProductFixtures::variant(),
+                    ]),
+                );
+        });
+
+        $result = $this->makeImporter()->import(new ShopifyImportOptions(handle: 'single-handle'));
+
+        $this->assertSame(1, $result->productsImported);
+    }
+
+    public function test_importer_marks_sync_job_failed_when_shopify_query_throws(): void
+    {
+        $this->mock(ShopifyClient::class, function (MockInterface $mock): void {
+            $mock->shouldReceive('query')
+                ->once()
+                ->andThrow(new ShopifyGraphQlException('Shopify API unavailable'));
+        });
+
+        try {
+            $this->makeImporter()->import();
+            $this->fail('Expected ShopifyGraphQlException was not thrown.');
+        } catch (ShopifyGraphQlException) {
+            // expected
+        }
+
+        $syncJob = SyncJob::query()->latest('id')->firstOrFail();
+        $this->assertSame(SyncJobStatus::Failed, $syncJob->status);
+        $this->assertNotNull($syncJob->finished_at);
+        $this->assertSame('Shopify API unavailable', $syncJob->error_message);
+    }
+
+    public function test_importer_stops_cleanly_when_cancellation_is_requested(): void
+    {
+        $this->mock(ShopifyClient::class, function (MockInterface $mock): void {
+            $mock->shouldReceive('query')
+                ->andReturnUsing(function (string $query, array $variables = []) {
+                    if (str_contains($query, 'ProductVariants')) {
+                        SyncJob::query()->latest('id')->first()?->update([
+                            'cancel_requested_at' => now(),
+                        ]);
+                    }
+
+                    if (str_contains($query, 'ImportActiveProducts')) {
+                        return ShopifyProductFixtures::productsResponse([
+                            ShopifyProductFixtures::product(['id' => 'gid://shopify/Product/1001', 'handle' => 'first']),
+                            ShopifyProductFixtures::product(['id' => 'gid://shopify/Product/1002', 'handle' => 'second']),
+                        ]);
+                    }
+
+                    return ShopifyProductFixtures::productVariantsResponse([
+                        ShopifyProductFixtures::variant(),
+                    ]);
+                });
+        });
+
+        $result = $this->makeImporter()->import();
+
+        $this->assertSame(1, $result->productsImported);
+
+        $syncJob = SyncJob::query()->findOrFail($result->syncJobId);
+        $this->assertSame(SyncJobStatus::Cancelled, $syncJob->status);
+        $this->assertNotNull($syncJob->cancelled_at);
+        $this->assertNotNull($syncJob->finished_at);
     }
 
     /**
