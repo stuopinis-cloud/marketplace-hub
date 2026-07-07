@@ -121,6 +121,12 @@ class ShopifyDebugProductOptionsCommand extends Command
             $this->line('  option2_value: '.($variant->option2_value ?? '—'));
             $this->line('  option3_name: '.($variant->option3_name ?? '—'));
             $this->line('  option3_value: '.($variant->option3_value ?? '—'));
+            $this->line('  barcode: '.($variant->barcode ?? '—'));
+            $this->line('  image_url: '.(filled($variant->image_url) ? 'yes' : 'no'));
+
+            if ($this->output->isVerbose() && filled($variant->image_url)) {
+                $this->line('  image_url_value: '.$variant->image_url);
+            }
 
             $selectedOptions = data_get($variant->raw_payload, 'selectedOptions');
 

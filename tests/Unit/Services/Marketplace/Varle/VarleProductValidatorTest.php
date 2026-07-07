@@ -54,9 +54,11 @@ class VarleProductValidatorTest extends TestCase
 
     public function test_validator_catches_missing_image(): void
     {
-        $variant = VarleCatalogFixtures::createExportableVariant();
+        $variant = VarleCatalogFixtures::createExportableVariant(variantOverrides: [
+            'image_url' => null,
+        ]);
         $variant->product->images()->delete();
-        $variant->product->load('images');
+        $variant->product->load(['images', 'variants']);
 
         $result = $this->validator->validateProduct(
             $variant->product,
@@ -65,7 +67,7 @@ class VarleProductValidatorTest extends TestCase
         );
 
         $this->assertFalse($result->isValid);
-        $this->assertContains('At least one product image is required.', $result->errors);
+        $this->assertContains('No variant-specific images found', $result->errors);
     }
 
     public function test_validator_accepts_valid_variant(): void

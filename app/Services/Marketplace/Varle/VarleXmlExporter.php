@@ -260,12 +260,32 @@ class VarleXmlExporter
                 continue;
             }
 
+            $imageResolution = VarleVariantPresenter::resolveExportImageUrls(
+                $product,
+                $groupValidVariants,
+                $config,
+            );
+
+            if ($imageResolution['urls'] === []) {
+                $this->recordSkippedExportGroupForImages(
+                    $syncJob,
+                    $product,
+                    $groupValidVariants,
+                    $config,
+                    $imageResolution,
+                    $exportGroup['color_value'],
+                );
+
+                continue;
+            }
+
             $payload = $this->buildProductPayload(
                 $product,
                 $groupValidVariants,
                 $config,
                 $categoryExplanation,
                 $exportGroup['color_value'],
+                $imageResolution,
             );
 
             fwrite($handle, $this->renderProductXml($payload).PHP_EOL);
@@ -356,6 +376,7 @@ class VarleXmlExporter
         array $config,
         array $categoryExplanation,
         ?string $colorValue,
+        ?array $imageResolution = null,
     ): array {
         $category = (string) $categoryExplanation['resolved_category'];
         $multiplier = (float) ($config['price_multiplier'] ?? 1);
@@ -381,6 +402,8 @@ class VarleXmlExporter
             $title .= ', '.$colorValue;
         }
 
+        $imageResolution ??= VarleVariantPresenter::resolveExportImageUrls($product, $validVariants, $config);
+
         $payload = [
             'url' => $this->resolveProductUrl($product, $config),
             'id' => $productId,
@@ -391,12 +414,7 @@ class VarleXmlExporter
             'price' => $this->formatPrice($basePrice),
             'prime_costs' => $this->formatPrice($this->calculatePrimeCosts($basePrice, $config)),
             'manufacturer' => $this->resolveManufacturer($product),
-            'images' => $product->images
-                ->sortBy('position')
-                ->pluck('url')
-                ->filter()
-                ->values()
-                ->all(),
+            'images' => $imageResolution['urls'],
             'barcode_format' => 'EAN',
             'group' => (string) $product->handle,
             'is_multi_variant' => $outputVariants,
@@ -579,6 +597,7 @@ class VarleXmlExporter
                     'price_multiplier' => 1,
                     'feed_filename' => 'varle.xml',
                     'require_category_mapping' => false,
+                    'allow_fallback_product_images' => false,
                     'vat_rate' => 21,
                 ],
             ],
@@ -596,6 +615,7 @@ class VarleXmlExporter
             'price_multiplier' => 1,
             'feed_filename' => 'varle.xml',
             'require_category_mapping' => false,
+            'allow_fallback_product_images' => false,
             'store_url' => null,
             'vat_rate' => null,
         ], $channel->config ?? []);
@@ -836,12 +856,62 @@ class VarleXmlExporter
             'sku' => null,
             'status' => SyncJobItemStatus::Failed,
             'message' => 'Product color group skipped because all variants are invalid or missing barcode',
-            'payload' => ['color' => $colorValue],
+            'payload' => array_merge(
+                $this->exportContextPayload($product),
+                ['color' => $colorValue],
+            ),
         ]);
     }
 
     /**
-     * @param  array<int, array{variant: ProductVariant, quantity: int}>  $validVariants
+     * @param  array<int, array{variant: ProductVariant, quantity: int}>  $groupValidVariants
+     * @param  array<string, mixed>  $config
+     * @param  array{urls: array<int, string>, used_fallback: bool, variant_image_url: ?string}  $imageResolution
+     */
+    private function recordSkippedExportGroupForImages(
+        SyncJob $syncJob,
+        Product $product,
+        array $groupValidVariants,
+        array $config,
+        array $imageResolution,
+        ?string $colorValue,
+    ): void {
+        $firstVariant = $groupValidVariants[0]['variant'] ?? null;
+        $message = VarleVariantPresenter::missingExportImagesMessage($config);
+
+        SyncJobItem::query()->create([
+            'sync_job_id' => $syncJob->id,
+            'product_id' => $product->id,
+            'variant_id' => $firstVariant?->id,
+            'sku' => $firstVariant?->sku,
+            'status' => SyncJobItemStatus::Failed,
+            'message' => $message,
+            'payload' => array_merge(
+                $this->exportContextPayload($product),
+                $this->imageExportContextPayload($product, $imageResolution),
+                filled($colorValue) ? ['color' => $colorValue] : [],
+            ),
+        ]);
+
+        $syncJob->increment('failed_items', count($groupValidVariants));
+        $this->skippedVariants += count($groupValidVariants);
+    }
+
+    /**
+     * @param  array{urls: array<int, string>, used_fallback: bool, variant_image_url: ?string}  $imageResolution
+     * @return array<string, mixed>
+     */
+    private function imageExportContextPayload(Product $product, array $imageResolution): array
+    {
+        return [
+            'variant_image_url' => $imageResolution['variant_image_url'] ?? '',
+            'product_images_count' => $product->images->count(),
+            'selected_export_images_count' => count($imageResolution['urls']),
+        ];
+    }
+
+    /**
+     * @param  array<int, array{variant: ProductVariant, quantity: int}>  $groupValidVariants
      */
     private function hasColorAmongVariants(array $validVariants): bool
     {
@@ -1105,6 +1175,19 @@ class VarleXmlExporter
             $groupValidVariants = $exportGroup['variants'];
 
             if ($groupValidVariants === []) {
+                continue;
+            }
+
+            $imageResolution = VarleVariantPresenter::resolveExportImageUrls(
+                $product,
+                $groupValidVariants,
+                $config,
+            );
+
+            if ($imageResolution['urls'] === []) {
+                $this->recordPreviewSkip(VarleVariantPresenter::missingExportImagesMessage($config));
+                $this->previewSkippedVariants += count($groupValidVariants);
+
                 continue;
             }
 

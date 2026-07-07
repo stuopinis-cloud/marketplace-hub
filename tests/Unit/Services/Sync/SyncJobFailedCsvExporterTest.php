@@ -52,9 +52,12 @@ class SyncJobFailedCsvExporterTest extends TestCase
         $this->assertSame('Variant title', $row[9]);
         $this->assertSame('SKU-MISSING', $row[10]);
         $this->assertSame('', $row[11]);
-        $this->assertSame('auto', $row[12]);
-        $this->assertSame('1', $row[13]);
-        $this->assertSame('1', $row[14]);
+        $this->assertSame('', $row[12]);
+        $this->assertSame('', $row[13]);
+        $this->assertSame('', $row[14]);
+        $this->assertSame('auto', $row[15]);
+        $this->assertSame('1', $row[16]);
+        $this->assertSame('1', $row[17]);
     }
 
     public function test_export_includes_varle_export_context_columns(): void
@@ -65,10 +68,10 @@ class SyncJobFailedCsvExporterTest extends TestCase
         $lines = preg_split('/\R/', trim(Storage::disk('public')->get($relativePath)));
         $row = str_getcsv($lines[1]);
 
-        $this->assertSame('auto', $row[12]);
-        $this->assertSame('1', $row[13]);
-        $this->assertSame('1', $row[14]);
-        $this->assertNotSame('', $row[15]);
+        $this->assertSame('auto', $row[15]);
+        $this->assertSame('1', $row[16]);
+        $this->assertSame('1', $row[17]);
+        $this->assertNotSame('', $row[18]);
     }
 
     public function test_export_escapes_commas_and_quotes_in_csv_values(): void

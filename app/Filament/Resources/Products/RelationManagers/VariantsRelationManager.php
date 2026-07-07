@@ -72,6 +72,13 @@ class VariantsRelationManager extends RelationManager
                 TextColumn::make('barcode')
                     ->searchable()
                     ->color(fn ($record) => blank($record->barcode) ? 'danger' : null),
+                TextColumn::make('image_url')
+                    ->label('Image')
+                    ->url(fn ($record) => $record->image_url)
+                    ->openUrlInNewTab()
+                    ->limit(40)
+                    ->placeholder('—')
+                    ->toggleable(),
                 TextColumn::make('title')
                     ->searchable(),
                 TextColumn::make('option1_name')

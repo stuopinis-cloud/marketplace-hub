@@ -52,8 +52,8 @@ class VarleProductValidator
             }
         }
 
-        if ($product->images->isEmpty()) {
-            $errors[] = 'At least one product image is required.';
+        if (! VarleVariantPresenter::productHasExportableImages($product, $channelConfig)) {
+            $errors[] = VarleVariantPresenter::missingExportImagesMessage($channelConfig);
         }
 
         if ($this->descriptionIsMissing($product)) {

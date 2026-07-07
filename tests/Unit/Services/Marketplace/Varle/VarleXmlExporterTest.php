@@ -602,6 +602,123 @@ class VarleXmlExporterTest extends TestCase
         $this->assertStringNotContainsString('<product>', Storage::disk('public')->get('feeds/varle.xml'));
     }
 
+    public function test_color_split_product_uses_only_variant_images_from_color_group(): void
+    {
+        VarleCatalogFixtures::createColorSizeProduct();
+
+        $this->makeExporter()->export();
+        $xml = Storage::disk('public')->get('feeds/varle.xml');
+
+        $melyniSection = $this->extractProductXmlSection($xml, 'vyriski-marskiniai-k459-melyni');
+        $juodiSection = $this->extractProductXmlSection($xml, 'vyriski-marskiniai-k459-juodi');
+
+        $this->assertStringContainsString('<image><![CDATA[https://cdn.example.com/melyni.jpg]]></image>', $melyniSection);
+        $this->assertStringNotContainsString('juodi.jpg', $melyniSection);
+        $this->assertStringContainsString('<image><![CDATA[https://cdn.example.com/juodi.jpg]]></image>', $juodiSection);
+        $this->assertStringNotContainsString('melyni.jpg', $juodiSection);
+    }
+
+    public function test_duplicate_variant_images_are_deduplicated_in_export(): void
+    {
+        VarleCatalogFixtures::createMultiVariantProduct(
+            productOverrides: ['handle' => 'dedupe-images-product'],
+            variantDefinitions: [
+                [
+                    'sku' => 'SKU-A',
+                    'barcode' => '4770000000501',
+                    'price' => 20,
+                    'option1' => 'S',
+                    'option1_name' => 'Dydis',
+                    'option1_value' => 'S',
+                    'image_url' => 'https://cdn.example.com/shared-variant.jpg',
+                ],
+                [
+                    'sku' => 'SKU-B',
+                    'barcode' => '4770000000502',
+                    'price' => 22,
+                    'option1' => 'M',
+                    'option1_name' => 'Dydis',
+                    'option1_value' => 'M',
+                    'image_url' => 'https://cdn.example.com/shared-variant.jpg',
+                ],
+            ],
+        );
+
+        $this->makeExporter()->export();
+        $xml = Storage::disk('public')->get('feeds/varle.xml');
+
+        $this->assertSame(1, substr_count($xml, '<image><![CDATA[https://cdn.example.com/shared-variant.jpg]]></image>'));
+    }
+
+    public function test_product_images_are_not_used_when_variant_images_exist(): void
+    {
+        VarleCatalogFixtures::createExportableVariant(
+            productOverrides: ['handle' => 'variant-image-only'],
+            variantOverrides: [
+                'image_url' => 'https://cdn.example.com/variant-only.jpg',
+            ],
+        );
+
+        Product::query()->where('handle', 'variant-image-only')->firstOrFail()
+            ->images()
+            ->update(['url' => 'https://cdn.example.com/product-only.jpg']);
+
+        $this->makeExporter()->export();
+        $xml = Storage::disk('public')->get('feeds/varle.xml');
+
+        $this->assertStringContainsString('<image><![CDATA[https://cdn.example.com/variant-only.jpg]]></image>', $xml);
+        $this->assertStringNotContainsString('product-only.jpg', $xml);
+    }
+
+    public function test_missing_variant_images_skip_product_when_fallback_disabled(): void
+    {
+        VarleCatalogFixtures::createExportableVariant(
+            productOverrides: ['handle' => 'missing-variant-images'],
+            variantOverrides: [
+                'image_url' => null,
+            ],
+        );
+
+        $result = $this->makeExporter()->export();
+
+        $this->assertSame(0, $result->exportedVariants);
+        $this->assertGreaterThan(0, $result->skippedVariants);
+
+        $failedItem = SyncJobItem::query()->firstOrFail();
+        $this->assertSame('No variant-specific images found', $failedItem->message);
+        $this->assertStringNotContainsString('<product>', Storage::disk('public')->get('feeds/varle.xml'));
+    }
+
+    public function test_fallback_product_images_work_when_allow_fallback_product_images_is_true(): void
+    {
+        MarketplaceChannel::query()->updateOrCreate(
+            ['type' => 'varle', 'name' => 'Varle.lt'],
+            [
+                'enabled' => true,
+                'config' => [
+                    'default_category' => 'Kita',
+                    'export_zero_stock' => true,
+                    'price_multiplier' => 1,
+                    'feed_filename' => 'varle.xml',
+                    'require_category_mapping' => false,
+                    'allow_fallback_product_images' => true,
+                ],
+            ],
+        );
+
+        VarleCatalogFixtures::createExportableVariant(
+            productOverrides: ['handle' => 'fallback-images-product'],
+            variantOverrides: [
+                'image_url' => null,
+            ],
+        );
+
+        $this->makeExporter()->export();
+        $xml = Storage::disk('public')->get('feeds/varle.xml');
+
+        $this->assertStringContainsString('<image><![CDATA[https://cdn.example.com/image.jpg]]></image>', $xml);
+    }
+
     private function makeExporter(): VarleXmlExporter
     {
         return $this->app->make(VarleXmlExporter::class);
@@ -609,7 +726,9 @@ class VarleXmlExporterTest extends TestCase
 
     private function extractProductXmlSection(string $xml, string $productId): string
     {
-        if (! preg_match('/<product>.*?<id>'.preg_quote($productId, '/').'<\/id>.*?<\/product>/s', $xml, $matches)) {
+        $pattern = '/<product>(?:(?!<\/product>).)*<id>'.preg_quote($productId, '/').'<\/id>(?:(?!<\/product>).)*<\/product>/s';
+
+        if (! preg_match($pattern, $xml, $matches)) {
             $this->fail('Product section not found for id: '.$productId);
         }
 

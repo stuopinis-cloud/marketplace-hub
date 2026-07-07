@@ -166,6 +166,84 @@ class VarleVariantPresenter
     }
 
     /**
+     * @param  array<int, array{variant: ProductVariant, quantity: int}>  $validVariants
+     * @param  array<string, mixed>  $config
+     * @return array{
+     *     urls: array<int, string>,
+     *     used_fallback: bool,
+     *     variant_image_url: ?string
+     * }
+     */
+    public static function resolveExportImageUrls(Product $product, array $validVariants, array $config): array
+    {
+        $urls = [];
+        $seen = [];
+        $firstVariantImage = null;
+
+        foreach ($validVariants as $row) {
+            $url = filled($row['variant']->image_url) ? (string) $row['variant']->image_url : null;
+
+            if ($firstVariantImage === null && $url !== null) {
+                $firstVariantImage = $url;
+            }
+
+            if ($url === null || isset($seen[$url])) {
+                continue;
+            }
+
+            $seen[$url] = true;
+            $urls[] = $url;
+        }
+
+        if ($urls !== []) {
+            return [
+                'urls' => $urls,
+                'used_fallback' => false,
+                'variant_image_url' => $firstVariantImage,
+            ];
+        }
+
+        if ($config['allow_fallback_product_images'] ?? false) {
+            return [
+                'urls' => $product->images
+                    ->sortBy('position')
+                    ->pluck('url')
+                    ->filter()
+                    ->unique()
+                    ->values()
+                    ->all(),
+                'used_fallback' => true,
+                'variant_image_url' => null,
+            ];
+        }
+
+        return [
+            'urls' => [],
+            'used_fallback' => false,
+            'variant_image_url' => null,
+        ];
+    }
+
+    public static function missingExportImagesMessage(array $config): string
+    {
+        return ($config['allow_fallback_product_images'] ?? false)
+            ? 'No images'
+            : 'No variant-specific images found';
+    }
+
+    /**
+     * @param  array<string, mixed>  $config
+     */
+    public static function productHasExportableImages(Product $product, array $config): bool
+    {
+        if ($product->variants->contains(fn (ProductVariant $variant): bool => filled($variant->image_url))) {
+            return true;
+        }
+
+        return ($config['allow_fallback_product_images'] ?? false) && $product->images->isNotEmpty();
+    }
+
+    /**
      * @param  array<int, ProductVariant>  $variants
      * @return array<string, array<int, ProductVariant>>
      */

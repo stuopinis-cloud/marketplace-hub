@@ -60,6 +60,7 @@ class VarleCatalogFixtures
             'barcode' => '5901234123457',
             'title' => 'Default',
             'price' => 19.99,
+            'image_url' => 'https://cdn.example.com/image.jpg',
             'option1' => 'RAL7013',
             'option1_name' => 'Spalva',
             'option1_value' => 'RAL7013',
@@ -123,6 +124,8 @@ class VarleCatalogFixtures
             'alt' => 'Main image',
         ]);
 
+        $defaultVariantImageUrl = 'https://cdn.example.com/multi.jpg';
+
         $definitions = $variantDefinitions !== [] ? $variantDefinitions : [
             [
                 'sku' => 'SKU-S',
@@ -160,6 +163,10 @@ class VarleCatalogFixtures
 
             $definition = self::normalizeVariantOptionFields($definition);
 
+            if (! array_key_exists('image_url', $definition)) {
+                $definition['image_url'] = $defaultVariantImageUrl;
+            }
+
             $variant = ProductVariant::query()->create(array_merge([
                 'product_id' => $product->id,
                 'external_id' => 'variant-'.$index,
@@ -190,6 +197,7 @@ class VarleCatalogFixtures
                 'price' => 20,
                 'option1' => 'Mėlyni',
                 'option2' => 'M',
+                'image_url' => 'https://cdn.example.com/melyni.jpg',
                 'raw_payload' => [
                     'selectedOptions' => [
                         ['name' => 'Spalva', 'value' => 'Mėlyni'],
@@ -203,6 +211,7 @@ class VarleCatalogFixtures
                 'price' => 25,
                 'option1' => 'Mėlyni',
                 'option2' => 'L',
+                'image_url' => 'https://cdn.example.com/melyni.jpg',
                 'raw_payload' => [
                     'selectedOptions' => [
                         ['name' => 'Spalva', 'value' => 'Mėlyni'],
@@ -216,6 +225,7 @@ class VarleCatalogFixtures
                 'price' => 22,
                 'option1' => 'Juodi',
                 'option2' => 'M',
+                'image_url' => 'https://cdn.example.com/juodi.jpg',
                 'raw_payload' => [
                     'selectedOptions' => [
                         ['name' => 'Spalva', 'value' => 'Juodi'],
@@ -379,6 +389,7 @@ class VarleCatalogFixtures
                 'option2' => 'S',
                 'option2_name' => 'Dydis',
                 'option2_value' => 'S',
+                'image_url' => 'https://cdn.example.com/coyote-glove.jpg',
             ],
             [
                 'sku' => 'CWKTFF-72-009',
@@ -390,6 +401,7 @@ class VarleCatalogFixtures
                 'option2' => 'M',
                 'option2_name' => 'Dydis',
                 'option2_value' => 'M',
+                'image_url' => 'https://cdn.example.com/coyote-glove.jpg',
             ],
             [
                 'sku' => 'CWKTFF-55-008',
@@ -401,6 +413,7 @@ class VarleCatalogFixtures
                 'option2' => 'S',
                 'option2_name' => 'Dydis',
                 'option2_value' => 'S',
+                'image_url' => 'https://cdn.example.com/juoda-glove.jpg',
             ],
             [
                 'sku' => 'CWKTFF-55-009',
@@ -412,6 +425,7 @@ class VarleCatalogFixtures
                 'option2' => 'M',
                 'option2_name' => 'Dydis',
                 'option2_value' => 'M',
+                'image_url' => 'https://cdn.example.com/juoda-glove.jpg',
             ],
         ]);
     }

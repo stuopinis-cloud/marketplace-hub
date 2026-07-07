@@ -56,6 +56,9 @@ class ShopifyProductImporterTest extends TestCase
         $variant = ProductVariant::query()->where('external_id', '2001')->first();
         $this->assertNotNull($variant);
         $this->assertSame('SKU-2001', $variant->sku);
+        $this->assertSame('https://cdn.shopify.com/variant-image.jpg', $variant->image_url);
+        $this->assertSame('Variant front', $variant->image_alt);
+        $this->assertSame('9001', $variant->image_external_id);
         $this->assertSame('M', $variant->option1);
         $this->assertSame('Black', $variant->option2);
         $this->assertSame('Size', $variant->option1_name);

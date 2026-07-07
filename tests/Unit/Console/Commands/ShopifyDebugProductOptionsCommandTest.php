@@ -33,6 +33,20 @@ class ShopifyDebugProductOptionsCommandTest extends TestCase
             ->expectsOutputToContain('option1_value: Mėlyni')
             ->expectsOutputToContain('option2_name: Dydis')
             ->expectsOutputToContain('option2_value: M')
+            ->expectsOutputToContain('image_url: yes')
+            ->assertSuccessful();
+    }
+
+    public function test_command_shows_variant_image_url_in_verbose_mode(): void
+    {
+        VarleCatalogFixtures::createExportableVariant(
+            productOverrides: ['handle' => 'verbose-image-handle'],
+            variantOverrides: ['image_url' => 'https://cdn.example.com/verbose-variant.jpg'],
+        );
+
+        $this->artisan('shopify:debug-product-options', ['handle' => 'verbose-image-handle', '--verbose' => true])
+            ->expectsOutputToContain('image_url: yes')
+            ->expectsOutputToContain('image_url_value: https://cdn.example.com/verbose-variant.jpg')
             ->assertSuccessful();
     }
 

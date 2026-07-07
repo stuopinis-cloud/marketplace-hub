@@ -91,6 +91,11 @@ class ShopifyProductFixtures
                     ],
                 ],
             ],
+            'image' => [
+                'id' => 'gid://shopify/ProductImage/9001',
+                'url' => 'https://cdn.shopify.com/variant-image.jpg',
+                'altText' => 'Variant front',
+            ],
         ], $overrides);
     }
 

@@ -28,6 +28,9 @@ class ProductVariant extends Model
         'option3_name',
         'option3_value',
         'raw_payload',
+        'image_url',
+        'image_alt',
+        'image_external_id',
     ];
 
     protected function casts(): array

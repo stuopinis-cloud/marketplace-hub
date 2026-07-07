@@ -402,6 +402,7 @@ class ShopifyProductImporter
 
         $options = $this->mapOptionFields($variantPayload['selectedOptions'] ?? []);
         $weight = $this->extractWeight($variantPayload);
+        $image = $this->extractVariantImageFields($variantPayload);
 
         return ProductVariant::query()->updateOrCreate(
             [
@@ -426,8 +427,36 @@ class ShopifyProductImporter
                 'option3_name' => $options['option3_name'],
                 'option3_value' => $options['option3_value'],
                 'raw_payload' => $variantPayload,
+                'image_url' => $image['url'],
+                'image_alt' => $image['alt'],
+                'image_external_id' => $image['external_id'],
             ],
         );
+    }
+
+    /**
+     * @param  array<string, mixed>  $variantPayload
+     * @return array{url: ?string, alt: ?string, external_id: ?string}
+     */
+    private function extractVariantImageFields(array $variantPayload): array
+    {
+        $image = $variantPayload['image'] ?? null;
+
+        if (! is_array($image)) {
+            return [
+                'url' => null,
+                'alt' => null,
+                'external_id' => null,
+            ];
+        }
+
+        $imageId = (string) ($image['id'] ?? '');
+
+        return [
+            'url' => filled($image['url'] ?? null) ? (string) $image['url'] : null,
+            'alt' => filled($image['altText'] ?? null) ? (string) $image['altText'] : null,
+            'external_id' => $imageId !== '' ? $this->extractIdFromGid($imageId) : null,
+        ];
     }
 
     /**
@@ -1020,6 +1049,11 @@ class ShopifyProductImporter
                 selectedOptions {
                   name
                   value
+                }
+                image {
+                  id
+                  url
+                  altText
                 }
                 inventoryItem {
                   id
