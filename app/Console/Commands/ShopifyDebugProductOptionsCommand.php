@@ -3,6 +3,7 @@
 namespace App\Console\Commands;
 
 use App\Models\Product;
+use App\Services\Marketplace\Varle\VarleVariantPresenter;
 use Illuminate\Console\Command;
 use Illuminate\Support\Collection;
 
@@ -17,7 +18,7 @@ class ShopifyDebugProductOptionsCommand extends Command
         $handle = $this->argument('handle');
 
         $query = Product::query()
-            ->with('variants')
+            ->with(['variants', 'images'])
             ->orderBy('id');
 
         if (filled($handle)) {
@@ -102,6 +103,10 @@ class ShopifyDebugProductOptionsCommand extends Command
             $this->line('Product options (raw_payload): none');
         }
 
+        if ($this->output->isVerbose()) {
+            $this->renderProductImages($product);
+        }
+
         if ($product->variants->isEmpty()) {
             $this->line('Variants: none');
 
@@ -134,6 +139,48 @@ class ShopifyDebugProductOptionsCommand extends Command
                 $this->line('  raw selectedOptions: '.json_encode($selectedOptions, JSON_UNESCAPED_UNICODE));
             } else {
                 $this->line('  raw selectedOptions: none');
+            }
+        }
+    }
+
+    private function renderProductImages(Product $product): void
+    {
+        $analysis = VarleVariantPresenter::analyzeProductImages($product);
+
+        $this->newLine();
+        $this->line('Product images:');
+
+        if ($analysis['product_images'] === []) {
+            $this->line('  none');
+        }
+
+        foreach ($analysis['product_images'] as $image) {
+            $this->line(sprintf(
+                '  - [%s] %s (variant: %s)',
+                $image['classification'],
+                $image['url'],
+                $image['variant_sku'] ?? 'unassigned',
+            ));
+        }
+
+        $this->line('Variant image URLs:');
+
+        foreach ($analysis['variant_images'] as $variantImage) {
+            $color = filled($variantImage['color']) ? ' color='.$variantImage['color'] : '';
+            $url = filled($variantImage['image_url']) ? $variantImage['image_url'] : 'none';
+
+            $this->line(sprintf(
+                '  - SKU %s%s: %s',
+                $variantImage['sku'] ?? '—',
+                $color,
+                $url,
+            ));
+        }
+
+        if ($analysis['forbidden_urls'] !== []) {
+            $this->line('Forbidden variant image URLs (when exporting all groups together):');
+            foreach ($analysis['forbidden_urls'] as $url) {
+                $this->line('  - '.$url);
             }
         }
     }

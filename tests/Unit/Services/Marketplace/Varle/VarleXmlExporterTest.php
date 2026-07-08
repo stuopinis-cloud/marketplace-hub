@@ -8,6 +8,7 @@ use App\Models\CategoryMapping;
 use App\Models\FeedFile;
 use App\Models\MarketplaceChannel;
 use App\Models\Product;
+use App\Models\ProductImage;
 use App\Models\Source;
 use App\Models\SourceCategory;
 use App\Models\SyncJob;
@@ -604,7 +605,12 @@ class VarleXmlExporterTest extends TestCase
 
     public function test_color_split_product_uses_only_variant_images_from_color_group(): void
     {
-        VarleCatalogFixtures::createColorSizeProduct();
+        $product = VarleCatalogFixtures::createColorSizeProduct();
+        ProductImage::query()->create([
+            'product_id' => $product->id,
+            'url' => 'https://cdn.example.com/generic-gallery.jpg',
+            'position' => 2,
+        ]);
 
         $this->makeExporter()->export();
         $xml = Storage::disk('public')->get('feeds/varle.xml');
@@ -613,9 +619,38 @@ class VarleXmlExporterTest extends TestCase
         $juodiSection = $this->extractProductXmlSection($xml, 'vyriski-marskiniai-k459-juodi');
 
         $this->assertStringContainsString('<image><![CDATA[https://cdn.example.com/melyni.jpg]]></image>', $melyniSection);
+        $this->assertStringContainsString('<image><![CDATA[https://cdn.example.com/generic-gallery.jpg]]></image>', $melyniSection);
         $this->assertStringNotContainsString('juodi.jpg', $melyniSection);
         $this->assertStringContainsString('<image><![CDATA[https://cdn.example.com/juodi.jpg]]></image>', $juodiSection);
         $this->assertStringNotContainsString('melyni.jpg', $juodiSection);
+    }
+
+    public function test_coyote_color_split_includes_coyote_variant_image_and_generic_gallery(): void
+    {
+        $product = VarleCatalogFixtures::createMechanixGlovesProduct();
+        ProductImage::query()->create([
+            'product_id' => $product->id,
+            'url' => 'https://cdn.example.com/generic-detail.jpg',
+            'position' => 2,
+        ]);
+
+        $this->makeExporter()->export();
+        $xml = Storage::disk('public')->get('feeds/varle.xml');
+
+        $coyoteSection = $this->extractProductXmlSection(
+            $xml,
+            'taktines-ziemines-pirstines-mechanix-coldwork-fastfit-coyote',
+        );
+        $juodaSection = $this->extractProductXmlSection(
+            $xml,
+            'taktines-ziemines-pirstines-mechanix-coldwork-fastfit-juoda',
+        );
+
+        $this->assertStringContainsString('<image><![CDATA[https://cdn.example.com/coyote-glove.jpg]]></image>', $coyoteSection);
+        $this->assertStringContainsString('<image><![CDATA[https://cdn.example.com/generic-detail.jpg]]></image>', $coyoteSection);
+        $this->assertStringNotContainsString('juoda-glove.jpg', $coyoteSection);
+        $this->assertStringContainsString('<image><![CDATA[https://cdn.example.com/juoda-glove.jpg]]></image>', $juodaSection);
+        $this->assertStringNotContainsString('coyote-glove.jpg', $juodaSection);
     }
 
     public function test_duplicate_variant_images_are_deduplicated_in_export(): void
@@ -650,7 +685,7 @@ class VarleXmlExporterTest extends TestCase
         $this->assertSame(1, substr_count($xml, '<image><![CDATA[https://cdn.example.com/shared-variant.jpg]]></image>'));
     }
 
-    public function test_product_images_are_not_used_when_variant_images_exist(): void
+    public function test_variant_images_appear_before_safe_generic_product_images(): void
     {
         VarleCatalogFixtures::createExportableVariant(
             productOverrides: ['handle' => 'variant-image-only'],
@@ -659,15 +694,26 @@ class VarleXmlExporterTest extends TestCase
             ],
         );
 
-        Product::query()->where('handle', 'variant-image-only')->firstOrFail()
-            ->images()
-            ->update(['url' => 'https://cdn.example.com/product-only.jpg']);
+        $product = Product::query()->where('handle', 'variant-image-only')->firstOrFail();
+        $product->images()->update(['url' => 'https://cdn.example.com/product-only.jpg', 'position' => 1]);
+        ProductImage::query()->create([
+            'product_id' => $product->id,
+            'url' => 'https://cdn.example.com/detail-gallery.jpg',
+            'position' => 2,
+        ]);
 
         $this->makeExporter()->export();
         $xml = Storage::disk('public')->get('feeds/varle.xml');
 
-        $this->assertStringContainsString('<image><![CDATA[https://cdn.example.com/variant-only.jpg]]></image>', $xml);
-        $this->assertStringNotContainsString('product-only.jpg', $xml);
+        $variantPos = strpos($xml, '<image><![CDATA[https://cdn.example.com/variant-only.jpg]]></image>');
+        $productPos = strpos($xml, '<image><![CDATA[https://cdn.example.com/product-only.jpg]]></image>');
+        $detailPos = strpos($xml, '<image><![CDATA[https://cdn.example.com/detail-gallery.jpg]]></image>');
+
+        $this->assertNotFalse($variantPos);
+        $this->assertNotFalse($productPos);
+        $this->assertNotFalse($detailPos);
+        $this->assertLessThan($productPos, $variantPos);
+        $this->assertLessThan($detailPos, $productPos);
     }
 
     public function test_missing_variant_images_skip_product_when_fallback_disabled(): void

@@ -44,9 +44,11 @@ class ShopifyDebugProductOptionsCommandTest extends TestCase
             variantOverrides: ['image_url' => 'https://cdn.example.com/verbose-variant.jpg'],
         );
 
-        $this->artisan('shopify:debug-product-options', ['handle' => 'verbose-image-handle', '--verbose' => true])
+        $this->artisan('shopify:debug-product-options', ['handle' => 'verbose-image-handle', '-v' => true])
             ->expectsOutputToContain('image_url: yes')
             ->expectsOutputToContain('image_url_value: https://cdn.example.com/verbose-variant.jpg')
+            ->expectsOutputToContain('Product images:')
+            ->expectsOutputToContain('[generic]')
             ->assertSuccessful();
     }
 

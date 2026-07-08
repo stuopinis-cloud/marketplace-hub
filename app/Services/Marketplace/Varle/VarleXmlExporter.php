@@ -898,7 +898,14 @@ class VarleXmlExporter
     }
 
     /**
-     * @param  array{urls: array<int, string>, used_fallback: bool, variant_image_url: ?string}  $imageResolution
+     * @param  array{
+     *     urls: array<int, string>,
+     *     used_fallback: bool,
+     *     variant_image_url: ?string,
+     *     variant_images_count?: int,
+     *     generic_gallery_images_count?: int,
+     *     forbidden_variant_images_count?: int
+     * }  $imageResolution
      * @return array<string, mixed>
      */
     private function imageExportContextPayload(Product $product, array $imageResolution): array
@@ -907,6 +914,9 @@ class VarleXmlExporter
             'variant_image_url' => $imageResolution['variant_image_url'] ?? '',
             'product_images_count' => $product->images->count(),
             'selected_export_images_count' => count($imageResolution['urls']),
+            'variant_images_count' => $imageResolution['variant_images_count'] ?? 0,
+            'generic_gallery_images_count' => $imageResolution['generic_gallery_images_count'] ?? 0,
+            'forbidden_variant_images_count' => $imageResolution['forbidden_variant_images_count'] ?? 0,
         ];
     }
 

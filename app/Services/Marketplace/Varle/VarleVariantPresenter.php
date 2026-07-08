@@ -171,14 +171,27 @@ class VarleVariantPresenter
      * @return array{
      *     urls: array<int, string>,
      *     used_fallback: bool,
-     *     variant_image_url: ?string
+     *     variant_image_url: ?string,
+     *     variant_images_count: int,
+     *     generic_gallery_images_count: int,
+     *     forbidden_variant_images_count: int
      * }
      */
     public static function resolveExportImageUrls(Product $product, array $validVariants, array $config): array
     {
+        $includedVariantIds = collect($validVariants)
+            ->pluck('variant.id')
+            ->filter()
+            ->map(fn ($id): int => (int) $id)
+            ->flip()
+            ->all();
+
+        $forbiddenUrls = self::collectForbiddenVariantImageUrls($product, $includedVariantIds);
+
         $urls = [];
         $seen = [];
         $firstVariantImage = null;
+        $variantImagesCount = 0;
 
         foreach ($validVariants as $row) {
             $url = filled($row['variant']->image_url) ? (string) $row['variant']->image_url : null;
@@ -193,34 +206,158 @@ class VarleVariantPresenter
 
             $seen[$url] = true;
             $urls[] = $url;
+            $variantImagesCount++;
         }
 
-        if ($urls !== []) {
-            return [
-                'urls' => $urls,
-                'used_fallback' => false,
-                'variant_image_url' => $firstVariantImage,
-            ];
-        }
-
-        if ($config['allow_fallback_product_images'] ?? false) {
-            return [
-                'urls' => $product->images
+        if ($variantImagesCount === 0) {
+            if ($config['allow_fallback_product_images'] ?? false) {
+                $fallbackUrls = $product->images
                     ->sortBy('position')
                     ->pluck('url')
                     ->filter()
+                    ->map(fn ($url): string => (string) $url)
                     ->unique()
                     ->values()
-                    ->all(),
-                'used_fallback' => true,
+                    ->all();
+
+                return [
+                    'urls' => $fallbackUrls,
+                    'used_fallback' => true,
+                    'variant_image_url' => null,
+                    'variant_images_count' => 0,
+                    'generic_gallery_images_count' => count($fallbackUrls),
+                    'forbidden_variant_images_count' => count($forbiddenUrls),
+                ];
+            }
+
+            return [
+                'urls' => [],
+                'used_fallback' => false,
                 'variant_image_url' => null,
+                'variant_images_count' => 0,
+                'generic_gallery_images_count' => 0,
+                'forbidden_variant_images_count' => count($forbiddenUrls),
             ];
         }
 
+        $genericGalleryImagesCount = 0;
+
+        foreach ($product->images->sortBy('position') as $image) {
+            $url = filled($image->url) ? (string) $image->url : null;
+
+            if ($url === null || isset($seen[$url]) || isset($forbiddenUrls[$url])) {
+                continue;
+            }
+
+            if ($image->variant_id !== null && ! isset($includedVariantIds[$image->variant_id])) {
+                continue;
+            }
+
+            $seen[$url] = true;
+            $urls[] = $url;
+            $genericGalleryImagesCount++;
+        }
+
         return [
-            'urls' => [],
+            'urls' => $urls,
             'used_fallback' => false,
-            'variant_image_url' => null,
+            'variant_image_url' => $firstVariantImage,
+            'variant_images_count' => $variantImagesCount,
+            'generic_gallery_images_count' => $genericGalleryImagesCount,
+            'forbidden_variant_images_count' => count($forbiddenUrls),
+        ];
+    }
+
+    /**
+     * @param  array<int, int>  $includedVariantIds
+     * @return array<string, bool>
+     */
+    public static function collectForbiddenVariantImageUrls(Product $product, array $includedVariantIds): array
+    {
+        $forbiddenUrls = [];
+
+        foreach ($product->variants as $variant) {
+            if (isset($includedVariantIds[$variant->id])) {
+                continue;
+            }
+
+            if (filled($variant->image_url)) {
+                $forbiddenUrls[(string) $variant->image_url] = true;
+            }
+        }
+
+        foreach ($product->images as $image) {
+            if ($image->variant_id === null) {
+                continue;
+            }
+
+            if (isset($includedVariantIds[$image->variant_id])) {
+                continue;
+            }
+
+            if (filled($image->url)) {
+                $forbiddenUrls[(string) $image->url] = true;
+            }
+        }
+
+        return $forbiddenUrls;
+    }
+
+    /**
+     * @return array{
+     *     product_images: array<int, array{url: string, position: int, variant_id: ?int, variant_sku: ?string, classification: string}>,
+     *     variant_images: array<int, array{sku: ?string, image_url: ?string, color: ?string}>,
+     *     forbidden_urls: array<int, string>
+     * }
+     */
+    public static function analyzeProductImages(Product $product): array
+    {
+        $product->loadMissing(['images', 'variants']);
+
+        $variantImagesByUrl = $product->variants
+            ->filter(fn (ProductVariant $variant): bool => filled($variant->image_url))
+            ->mapWithKeys(fn (ProductVariant $variant): array => [(string) $variant->image_url => $variant]);
+
+        $variantImages = $product->variants->map(fn (ProductVariant $variant): array => [
+            'sku' => $variant->sku,
+            'image_url' => $variant->image_url,
+            'color' => self::colorValue($product, $variant),
+        ])->values()->all();
+
+        $productImages = $product->images
+            ->sortBy('position')
+            ->map(function ($image) use ($variantImagesByUrl, $product): array {
+                $url = (string) $image->url;
+                $assignedVariant = $image->variant_id !== null
+                    ? $product->variants->firstWhere('id', $image->variant_id)
+                    : null;
+
+                $classification = 'generic';
+
+                if ($assignedVariant !== null) {
+                    $classification = 'variant-assigned';
+                } elseif ($variantImagesByUrl->has($url)) {
+                    $classification = 'matches-variant-image-url';
+                }
+
+                return [
+                    'url' => $url,
+                    'position' => (int) $image->position,
+                    'variant_id' => $image->variant_id,
+                    'variant_sku' => $assignedVariant?->sku,
+                    'classification' => $classification,
+                ];
+            })
+            ->values()
+            ->all();
+
+        $includedVariantIds = $product->variants->pluck('id')->flip()->all();
+        $forbiddenUrls = array_keys(self::collectForbiddenVariantImageUrls($product, $includedVariantIds));
+
+        return [
+            'product_images' => $productImages,
+            'variant_images' => $variantImages,
+            'forbidden_urls' => $forbiddenUrls,
         ];
     }
 
