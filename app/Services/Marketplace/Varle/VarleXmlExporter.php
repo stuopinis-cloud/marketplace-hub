@@ -12,6 +12,7 @@ use App\Models\ProductVariant;
 use App\Models\SyncJob;
 use App\Models\SyncJobItem;
 use App\Services\Marketplace\CategoryResolver;
+use App\Support\MarketplaceChannelConfig;
 use DOMDocument;
 use DOMElement;
 use Illuminate\Database\Eloquent\Builder;
@@ -65,6 +66,8 @@ class VarleXmlExporter
         private readonly VarleProductValidator $validator,
         private readonly CategoryResolver $categoryResolver,
         private readonly VarleExportGatekeeper $exportGatekeeper,
+        private readonly VarleDeliveryResolver $deliveryResolver,
+        private readonly VarleStockEvaluator $stockEvaluator,
     ) {}
 
     public function export(bool $debug = false): VarleExportResult
@@ -243,7 +246,7 @@ class VarleXmlExporter
             );
         }
 
-        $allValidVariants = $this->collectValidVariants($product, $variants->all(), $syncJob, $config);
+        $allValidVariants = $this->collectValidVariants($product, $variants->all(), $syncJob, $config, $channel);
         $hasColor = $this->hasColorAmongVariants($allValidVariants);
         $exportGroups = $this->buildExportGroups($allValidVariants, $hasColor);
         $exportedGroupCount = 0;
@@ -324,12 +327,14 @@ class VarleXmlExporter
         array $variants,
         SyncJob $syncJob,
         array $config,
+        MarketplaceChannel $channel,
     ): array {
+        $deliveryRule = $this->deliveryResolver->resolveForProduct($product, $config);
         $validVariants = [];
 
         foreach ($variants as $variant) {
             if (blank($variant->barcode)) {
-                $this->recordSkippedVariant($syncJob, $variant, 'Missing barcode');
+                $this->recordSkippedVariant($syncJob, $variant, 'Missing barcode', [], 'missing_barcode', $product, $config, $deliveryRule);
 
                 continue;
             }
@@ -342,6 +347,28 @@ class VarleXmlExporter
                     $variant,
                     $variantValidation->message(),
                     $variantValidation->errors,
+                    $this->issueCodeFromMessage($variantValidation->message()),
+                    $product,
+                    $config,
+                    $deliveryRule,
+                );
+
+                continue;
+            }
+
+            $quantity = $this->sumInventoryQuantity($variant);
+            $stockAssessment = $this->stockEvaluator->assessVariant($variant, $quantity, $deliveryRule);
+
+            if (! $stockAssessment['exportable']) {
+                $this->recordSkippedVariant(
+                    $syncJob,
+                    $variant,
+                    (string) $stockAssessment['issue_message'],
+                    [],
+                    (string) $stockAssessment['issue_code'],
+                    $product,
+                    $config,
+                    $deliveryRule,
                 );
 
                 continue;
@@ -349,7 +376,8 @@ class VarleXmlExporter
 
             $validVariants[] = [
                 'variant' => $variant,
-                'quantity' => $this->sumInventoryQuantity($variant),
+                'quantity' => $stockAssessment['quantity'],
+                'delivery_class' => $stockAssessment['delivery_class'],
             ];
         }
 
@@ -403,6 +431,8 @@ class VarleXmlExporter
         }
 
         $imageResolution ??= VarleVariantPresenter::resolveExportImageUrls($product, $validVariants, $config);
+        $deliveryRule = $this->deliveryResolver->resolveForProduct($product, $config);
+        $deliveryClasses = collect($validVariants)->pluck('delivery_class')->filter()->values()->all();
 
         $payload = [
             'url' => $this->resolveProductUrl($product, $config),
@@ -419,6 +449,7 @@ class VarleXmlExporter
             'group' => (string) $product->handle,
             'is_multi_variant' => $outputVariants,
             'weight' => $this->weightInKg($firstVariant),
+            'delivery_text' => $this->deliveryResolver->resolveProductDeliveryText($deliveryRule, $deliveryClasses),
         ];
 
         if ($priceOld !== null) {
@@ -526,6 +557,10 @@ class VarleXmlExporter
             $this->appendCdataElement($document, $productElement, 'manufacturer', (string) $product['manufacturer']);
         }
 
+        if (filled($product['delivery_text'] ?? null)) {
+            $this->appendCdataElement($document, $productElement, 'delivery_text', (string) $product['delivery_text']);
+        }
+
         $imagesElement = $document->createElement('images');
         $productElement->appendChild($imagesElement);
 
@@ -598,6 +633,9 @@ class VarleXmlExporter
                     'feed_filename' => 'varle.xml',
                     'require_category_mapping' => false,
                     'allow_fallback_product_images' => false,
+                    'allow_backorder_export' => true,
+                    'delivery_in_stock_text' => (string) config('marketplace.exports.varle.default_delivery_text', '1-2 d.d.'),
+                    'delivery_backorder_text' => '5-10 d.d.',
                     'vat_rate' => 21,
                 ],
             ],
@@ -609,16 +647,19 @@ class VarleXmlExporter
      */
     private function channelConfig(MarketplaceChannel $channel): array
     {
-        return array_merge([
+        return MarketplaceChannelConfig::merge($channel->config ?? [], [
             'default_category' => 'Kita',
             'export_zero_stock' => true,
             'price_multiplier' => 1,
             'feed_filename' => 'varle.xml',
             'require_category_mapping' => false,
             'allow_fallback_product_images' => false,
+            'allow_backorder_export' => true,
+            'delivery_in_stock_text' => (string) config('marketplace.exports.varle.default_delivery_text', '1-2 d.d.'),
+            'delivery_backorder_text' => '5-10 d.d.',
             'store_url' => null,
             'vat_rate' => null,
-        ], $channel->config ?? []);
+        ]);
     }
 
     /**
@@ -791,14 +832,20 @@ class VarleXmlExporter
 
     /**
      * @param  array<int, string>  $errors
+     * @param  array<string, mixed>  $deliveryRule
      */
     private function recordSkippedVariant(
         SyncJob $syncJob,
         ProductVariant $variant,
         string $message,
         array $errors = [],
+        ?string $issueCode = null,
+        ?Product $product = null,
+        ?array $config = null,
+        ?array $deliveryRule = null,
     ): void {
-        $product = $variant->product ?? $variant->loadMissing('product')->product;
+        $product ??= $variant->product ?? $variant->loadMissing('product')->product;
+        $quantity = $this->sumInventoryQuantity($variant);
 
         SyncJobItem::query()->create([
             'sync_job_id' => $syncJob->id,
@@ -808,13 +855,72 @@ class VarleXmlExporter
             'status' => SyncJobItemStatus::Failed,
             'message' => $message,
             'payload' => array_merge(
-                $product ? $this->exportContextPayload($product) : [],
+                $product ? $this->diagnosticsPayload($product, $variant, $config ?? [], $deliveryRule ?? [], $issueCode, $message, $quantity) : [],
                 $errors !== [] ? ['errors' => $errors] : [],
             ),
         ]);
 
         $syncJob->increment('failed_items');
         $this->skippedVariants++;
+    }
+
+    /**
+     * @param  array<string, mixed>  $config
+     * @param  array<string, mixed>  $deliveryRule
+     * @return array<string, mixed>
+     */
+    private function diagnosticsPayload(
+        Product $product,
+        ProductVariant $variant,
+        array $config,
+        array $deliveryRule,
+        ?string $issueCode,
+        string $message,
+        int $quantity,
+    ): array {
+        $categoryExplanation = $this->categoryResolver->explain($product, $this->resolveChannel());
+
+        return array_merge($this->exportContextPayload($product), [
+            'vendor' => $product->vendor,
+            'product_type' => $product->product_type,
+            'source_categories' => $product->sourceCategories->pluck('name')->implode(', '),
+            'mapped_category' => $categoryExplanation['resolved_category'] ?? '',
+            'category_status' => blank($categoryExplanation['resolved_category'])
+                ? 'missing'
+                : (($categoryExplanation['fallback_used'] ?? false) ? 'fallback' : 'mapped'),
+            'variant_title' => $variant->title,
+            'variant_sku' => $variant->sku,
+            'barcode' => $variant->barcode,
+            'has_barcode' => filled($variant->barcode),
+            'price' => $variant->price,
+            'compare_at_price' => $variant->compare_at_price,
+            'quantity' => $quantity,
+            'inventory_policy' => $variant->inventory_policy,
+            'backorder_allowed' => $variant->backorder_allowed,
+            'has_variant_image' => filled($variant->image_url),
+            'variant_image_url' => $variant->image_url,
+            'product_images_count' => $product->images->count(),
+            'stock_status' => $quantity > 0 ? 'in_stock' : ($variant->backorder_allowed ? 'backorder' : 'out_of_stock_blocked'),
+            'delivery_text' => $deliveryRule['in_stock_delivery_text'] ?? '',
+            'vendor_delivery_rule' => $deliveryRule['status'] ?? '',
+            'issue_code' => $issueCode ?? $this->issueCodeFromMessage($message),
+            'issue_message' => $message,
+            'can_fix_in_shopify' => in_array($issueCode, ['missing_barcode', 'missing_variant_image', 'out_of_stock_no_backorder'], true),
+            'can_fix_in_hub' => in_array($issueCode, ['pending_review', 'excluded', 'missing_category_mapping'], true),
+        ]);
+    }
+
+    private function issueCodeFromMessage(string $message): string
+    {
+        return match (true) {
+            str_contains($message, 'Missing barcode') => 'missing_barcode',
+            str_contains($message, 'Out of stock and backorder is not allowed') => 'out_of_stock_no_backorder',
+            str_contains($message, 'Backorder export is disabled') => 'backorder_disabled_for_vendor',
+            str_contains($message, 'Price must be greater than 0') => 'price_invalid',
+            str_contains($message, 'variant-specific images') => 'missing_variant_image',
+            str_contains($message, 'No images') => 'no_images',
+            default => 'no_exportable_variants',
+        };
     }
 
     /**
@@ -1224,6 +1330,7 @@ class VarleXmlExporter
         array $variants,
         array $config,
     ): array {
+        $deliveryRule = $this->deliveryResolver->resolveForProduct($product, $config);
         $validVariants = [];
 
         foreach ($variants as $variant) {
@@ -1244,9 +1351,20 @@ class VarleXmlExporter
                 continue;
             }
 
+            $quantity = $this->sumInventoryQuantity($variant);
+            $stockAssessment = $this->stockEvaluator->assessVariant($variant, $quantity, $deliveryRule);
+
+            if (! $stockAssessment['exportable']) {
+                $this->previewSkippedVariants++;
+                $this->recordPreviewSkip((string) $stockAssessment['issue_message']);
+
+                continue;
+            }
+
             $validVariants[] = [
                 'variant' => $variant,
-                'quantity' => $this->sumInventoryQuantity($variant),
+                'quantity' => $stockAssessment['quantity'],
+                'delivery_class' => $stockAssessment['delivery_class'],
             ];
         }
 

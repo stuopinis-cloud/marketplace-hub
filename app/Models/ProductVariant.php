@@ -31,6 +31,8 @@ class ProductVariant extends Model
         'image_url',
         'image_alt',
         'image_external_id',
+        'inventory_policy',
+        'backorder_allowed',
     ];
 
     protected function casts(): array
@@ -40,6 +42,7 @@ class ProductVariant extends Model
             'compare_at_price' => 'decimal:2',
             'weight' => 'decimal:3',
             'raw_payload' => 'array',
+            'backorder_allowed' => 'boolean',
         ];
     }
 

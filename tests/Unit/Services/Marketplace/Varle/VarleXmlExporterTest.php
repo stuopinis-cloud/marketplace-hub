@@ -71,7 +71,7 @@ class VarleXmlExporterTest extends TestCase
         $this->assertStringContainsString('<price>29.50</price>', $xml);
         $this->assertStringContainsString('<prime_costs>24.38</prime_costs>', $xml);
         $this->assertStringContainsString('<manufacturer><![CDATA[Vendor Name]]></manufacturer>', $xml);
-        $this->assertStringNotContainsString('<delivery_text>', $xml);
+        $this->assertStringContainsString('<delivery_text><![CDATA[1-2 d.d.]]></delivery_text>', $xml);
         $this->assertStringContainsString('<quantity>5</quantity>', $xml);
         $this->assertStringContainsString('<barcode>5901234123457</barcode>', $xml);
         $this->assertStringContainsString('<categories>', $xml);
@@ -104,7 +104,7 @@ class VarleXmlExporterTest extends TestCase
         $this->assertStringContainsString('<title>L</title>', $xml);
         $this->assertStringNotContainsString('<title>RAL7013 / S</title>', $xml);
         $this->assertStringContainsString('<group><![CDATA[multi-variant-product]]></group>', $xml);
-        $this->assertStringNotContainsString('<delivery_text>', $xml);
+        $this->assertStringContainsString('<delivery_text><![CDATA[1-2 d.d.]]></delivery_text>', $xml);
     }
 
     public function test_product_with_color_and_size_exports_one_product_per_color(): void
@@ -414,6 +414,8 @@ class VarleXmlExporterTest extends TestCase
             $this->app->make(VarleProductValidator::class),
             $this->app->make(CategoryResolver::class),
             $this->app->make(\App\Services\Marketplace\Varle\VarleExportGatekeeper::class),
+            $this->app->make(\App\Services\Marketplace\Varle\VarleDeliveryResolver::class),
+            $this->app->make(\App\Services\Marketplace\Varle\VarleStockEvaluator::class),
         ) extends VarleXmlExporter
         {
             public int $batchCount = 0;
@@ -441,6 +443,8 @@ class VarleXmlExporterTest extends TestCase
             $this->app->make(VarleProductValidator::class),
             $this->app->make(CategoryResolver::class),
             $this->app->make(\App\Services\Marketplace\Varle\VarleExportGatekeeper::class),
+            $this->app->make(\App\Services\Marketplace\Varle\VarleDeliveryResolver::class),
+            $this->app->make(\App\Services\Marketplace\Varle\VarleStockEvaluator::class),
         ) extends VarleXmlExporter
         {
             protected function productsQuery(): \Illuminate\Database\Eloquent\Builder

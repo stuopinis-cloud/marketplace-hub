@@ -96,6 +96,7 @@ class ShopifyProductFixtures
                 'url' => 'https://cdn.shopify.com/variant-image.jpg',
                 'altText' => 'Variant front',
             ],
+            'inventoryPolicy' => 'DENY',
         ], $overrides);
     }
 

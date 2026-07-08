@@ -70,8 +70,7 @@ class CategoryMappingForm
                         if ($category !== null) {
                             $set('source_value', $category->mappingSourceValue());
                         }
-                    })
-                    ->dehydrated(false),
+                    }),
                 Toggle::make('use_manual_source_value')
                     ->label('Enter source value manually')
                     ->visible(fn (Get $get): bool => self::usesSourceCategoryPicker($get))
@@ -80,6 +79,8 @@ class CategoryMappingForm
                 TextInput::make('source_value')
                     ->required(fn (Get $get): bool => self::usesManualSourceValue($get))
                     ->maxLength(255)
+                    ->dehydrated()
+                    ->hidden(fn (Get $get): bool => self::usesSourceCategoryPicker($get) && ! $get('use_manual_source_value'))
                     ->visible(fn (Get $get): bool => self::usesManualSourceValue($get))
                     ->helperText(fn (Get $get): ?string => self::usesSourceCategoryPicker($get) && $get('use_manual_source_value')
                         ? 'Override the selected source with a custom value if needed.'

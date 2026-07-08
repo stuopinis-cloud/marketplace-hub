@@ -403,6 +403,7 @@ class ShopifyProductImporter
         $options = $this->mapOptionFields($variantPayload['selectedOptions'] ?? []);
         $weight = $this->extractWeight($variantPayload);
         $image = $this->extractVariantImageFields($variantPayload);
+        $inventoryPolicy = strtoupper((string) ($variantPayload['inventoryPolicy'] ?? ''));
 
         return ProductVariant::query()->updateOrCreate(
             [
@@ -430,6 +431,8 @@ class ShopifyProductImporter
                 'image_url' => $image['url'],
                 'image_alt' => $image['alt'],
                 'image_external_id' => $image['external_id'],
+                'inventory_policy' => filled($inventoryPolicy) ? $inventoryPolicy : null,
+                'backorder_allowed' => $inventoryPolicy === 'CONTINUE',
             ],
         );
     }
@@ -1046,6 +1049,7 @@ class ShopifyProductImporter
                 barcode
                 price
                 compareAtPrice
+                inventoryPolicy
                 selectedOptions {
                   name
                   value

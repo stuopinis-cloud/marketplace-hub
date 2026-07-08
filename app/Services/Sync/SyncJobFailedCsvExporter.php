@@ -22,21 +22,39 @@ class SyncJobFailedCsvExporter
             'sync_job_item_id',
             'status',
             'message',
-            'sku',
             'product_id',
-            'product_title',
             'product_handle',
+            'product_title',
+            'vendor',
+            'product_type',
+            'source_categories',
+            'varle_export_status',
+            'mapped_category',
+            'category_status',
             'variant_id',
-            'variant_title',
             'variant_sku',
-            'variant_barcode',
+            'variant_title',
+            'barcode',
+            'has_barcode',
+            'price',
+            'compare_at_price',
+            'quantity',
+            'inventory_policy',
+            'backorder_allowed',
+            'has_variant_image',
             'variant_image_url',
             'product_images_count',
             'selected_export_images_count',
-            'varle_export_status',
-            'category_mapping_export_enabled',
-            'product_is_published',
-            'product_published_at',
+            'variant_images_count',
+            'generic_gallery_images_count',
+            'forbidden_variant_images_count',
+            'stock_status',
+            'delivery_text',
+            'vendor_delivery_rule',
+            'issue_code',
+            'issue_message',
+            'can_fix_in_shopify',
+            'can_fix_in_hub',
             'created_at',
         ];
     }
@@ -59,7 +77,7 @@ class SyncJobFailedCsvExporter
             fputcsv($handle, $this->headers());
 
             $items = $syncJob->items()
-                ->with(['product', 'variant.product'])
+                ->with(['product.sourceCategories', 'variant.product'])
                 ->where('status', SyncJobItemStatus::Failed)
                 ->orderBy('id')
                 ->get();
@@ -118,32 +136,46 @@ class SyncJobFailedCsvExporter
     private function rowForItem(SyncJob $syncJob, SyncJobItem $item): array
     {
         $variant = $item->variant;
-        $product = $item->product;
-
-        if ($product === null && $variant !== null) {
-            $product = $variant->product;
-        }
+        $product = $item->product ?? $variant?->product;
 
         return [
             $syncJob->id,
             $item->id,
             $item->status?->value ?? (string) $item->status,
             (string) ($item->message ?? ''),
-            (string) ($item->sku ?? ''),
             $item->product_id,
-            (string) ($product?->title ?? ''),
             (string) ($product?->handle ?? ''),
+            (string) ($product?->title ?? ''),
+            $this->payloadValue($item, 'vendor') ?: (string) ($product?->vendor ?? ''),
+            $this->payloadValue($item, 'product_type') ?: (string) ($product?->product_type ?? ''),
+            $this->payloadValue($item, 'source_categories'),
+            $this->payloadValue($item, 'varle_export_status'),
+            $this->payloadValue($item, 'mapped_category'),
+            $this->payloadValue($item, 'category_status'),
             $item->variant_id,
-            (string) ($variant?->title ?? ''),
-            (string) ($variant?->sku ?? ''),
-            (string) ($variant?->barcode ?? ''),
-            $this->payloadValue($item, 'variant_image_url'),
+            $this->payloadValue($item, 'variant_sku') ?: (string) ($variant?->sku ?? ''),
+            $this->payloadValue($item, 'variant_title') ?: (string) ($variant?->title ?? ''),
+            $this->payloadValue($item, 'barcode') ?: (string) ($variant?->barcode ?? ''),
+            $this->payloadValue($item, 'has_barcode'),
+            $this->payloadValue($item, 'price') ?: (string) ($variant?->price ?? ''),
+            $this->payloadValue($item, 'compare_at_price') ?: (string) ($variant?->compare_at_price ?? ''),
+            $this->payloadValue($item, 'quantity'),
+            $this->payloadValue($item, 'inventory_policy') ?: (string) ($variant?->inventory_policy ?? ''),
+            $this->payloadValue($item, 'backorder_allowed'),
+            $this->payloadValue($item, 'has_variant_image'),
+            $this->payloadValue($item, 'variant_image_url') ?: (string) ($variant?->image_url ?? ''),
             $this->payloadValue($item, 'product_images_count'),
             $this->payloadValue($item, 'selected_export_images_count'),
-            $this->payloadValue($item, 'varle_export_status'),
-            $this->payloadValue($item, 'category_mapping_export_enabled'),
-            $this->payloadValue($item, 'product_is_published'),
-            $this->payloadValue($item, 'product_published_at'),
+            $this->payloadValue($item, 'variant_images_count'),
+            $this->payloadValue($item, 'generic_gallery_images_count'),
+            $this->payloadValue($item, 'forbidden_variant_images_count'),
+            $this->payloadValue($item, 'stock_status'),
+            $this->payloadValue($item, 'delivery_text'),
+            $this->payloadValue($item, 'vendor_delivery_rule'),
+            $this->payloadValue($item, 'issue_code'),
+            $this->payloadValue($item, 'issue_message') ?: (string) ($item->message ?? ''),
+            $this->payloadValue($item, 'can_fix_in_shopify'),
+            $this->payloadValue($item, 'can_fix_in_hub'),
             $item->created_at?->toDateTimeString(),
         ];
     }
@@ -153,41 +185,18 @@ class SyncJobFailedCsvExporter
      */
     private function warningRows(SyncJob $syncJob): array
     {
-        $warnings = collect($syncJob->context['warnings'] ?? [])
+        $empty = array_fill(0, count($this->headers()) - 1, '');
+
+        return collect($syncJob->context['warnings'] ?? [])
             ->filter(fn ($warning) => is_string($warning) && $warning !== '')
-            ->values();
+            ->map(function (string $warning) use ($syncJob, $empty): array {
+                $row = array_merge([$syncJob->id, null, 'warning', $warning], array_slice($empty, 3));
+                $row[5] = preg_match('/^Product ([^:]+): /', $warning, $matches) === 1 ? trim($matches[1]) : '';
+                $row[count($this->headers()) - 1] = $syncJob->finished_at?->toDateTimeString() ?? $syncJob->created_at?->toDateTimeString();
 
-        return $warnings->map(function (string $warning) use ($syncJob): array {
-            $handle = null;
-
-            if (preg_match('/^Product ([^:]+): /', $warning, $matches) === 1) {
-                $handle = trim($matches[1]);
-            }
-
-            return [
-                $syncJob->id,
-                null,
-                'warning',
-                $warning,
-                '',
-                null,
-                '',
-                $handle,
-                null,
-                '',
-                '',
-                '',
-                '',
-                '',
-                '',
-                '',
-                '',
-                '',
-                '',
-                '',
-                $syncJob->finished_at?->toDateTimeString() ?? $syncJob->created_at?->toDateTimeString(),
-            ];
-        })->all();
+                return $row;
+            })
+            ->all();
     }
 
     private function payloadValue(SyncJobItem $item, string $key): string

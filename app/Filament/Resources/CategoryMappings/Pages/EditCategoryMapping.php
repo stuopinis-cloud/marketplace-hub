@@ -3,12 +3,15 @@
 namespace App\Filament\Resources\CategoryMappings\Pages;
 
 use App\Filament\Resources\CategoryMappings\CategoryMappingResource;
+use App\Filament\Resources\CategoryMappings\Concerns\ResolvesCategoryMappingSourceValue;
 use App\Models\SourceCategory;
 use Filament\Actions\DeleteAction;
 use Filament\Resources\Pages\EditRecord;
 
 class EditCategoryMapping extends EditRecord
 {
+    use ResolvesCategoryMappingSourceValue;
+
     protected static string $resource = CategoryMappingResource::class;
 
     protected function getHeaderActions(): array
@@ -40,8 +43,20 @@ class EditCategoryMapping extends EditRecord
         }
 
         $data['source_category_id'] = $sourceCategory->id;
-        $data['use_manual_source_value'] = $sourceCategory->mappingSourceValue() !== ($data['source_value'] ?? '');
+        $stored = mb_strtolower(trim((string) ($data['source_value'] ?? '')));
+        $canonical = mb_strtolower(trim($sourceCategory->mappingSourceValue()));
+        $alternate = mb_strtolower(trim((string) $sourceCategory->name));
+        $data['use_manual_source_value'] = ! in_array($stored, [$canonical, $alternate], true);
 
         return $data;
+    }
+
+    /**
+     * @param  array<string, mixed>  $data
+     * @return array<string, mixed>
+     */
+    protected function mutateFormDataBeforeSave(array $data): array
+    {
+        return $this->resolveCategoryMappingSourceValue($data);
     }
 }

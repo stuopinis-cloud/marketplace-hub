@@ -2,6 +2,7 @@
 
 namespace App\Models;
 
+use App\Support\MarketplaceChannelConfig;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\HasMany;
 
@@ -35,5 +36,20 @@ class MarketplaceChannel extends Model
     public function categoryMappings(): HasMany
     {
         return $this->hasMany(CategoryMapping::class);
+    }
+
+    public function configString(string $key, ?string $default = null): ?string
+    {
+        return MarketplaceChannelConfig::for($this->config ?? [])->string($key, $default);
+    }
+
+    public function configBool(string $key, bool $default = false): bool
+    {
+        return MarketplaceChannelConfig::for($this->config ?? [])->bool($key, $default);
+    }
+
+    public function configInt(string $key, int $default = 0): int
+    {
+        return MarketplaceChannelConfig::for($this->config ?? [])->int($key, $default);
     }
 }

@@ -26,6 +26,19 @@ class Product extends Model
         'handle',
         'raw_payload',
         'imported_at',
+        'varle_is_ready',
+        'varle_issue_count',
+        'varle_issue_codes',
+        'varle_barcode_status',
+        'varle_image_status',
+        'varle_category_status',
+        'varle_stock_status',
+        'varle_vendor_delivery_rule_status',
+        'varle_delivery_text_preview',
+        'varle_mapped_category_preview',
+        'varle_exportable_variants_count',
+        'varle_skipped_variants_count',
+        'varle_readiness_cached_at',
     ];
 
     protected function casts(): array
@@ -35,6 +48,12 @@ class Product extends Model
             'varle_export_status' => VarleExportStatus::class,
             'raw_payload' => 'array',
             'imported_at' => 'datetime',
+            'varle_is_ready' => 'boolean',
+            'varle_issue_count' => 'integer',
+            'varle_issue_codes' => 'array',
+            'varle_exportable_variants_count' => 'integer',
+            'varle_skipped_variants_count' => 'integer',
+            'varle_readiness_cached_at' => 'datetime',
         ];
     }
 

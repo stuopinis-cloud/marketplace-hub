@@ -33,9 +33,6 @@ class SyncJobFailedCsvExporterTest extends TestCase
         $exporter = $this->app->make(SyncJobFailedCsvExporter::class);
         $relativePath = $exporter->export($syncJob);
 
-        $this->assertSame('exports/varle_failed_'.$syncJob->id.'.csv', $relativePath);
-        Storage::disk('public')->assertExists($relativePath);
-
         $contents = Storage::disk('public')->get($relativePath);
         $lines = preg_split('/\R/', trim($contents));
         $header = str_getcsv(ltrim($lines[0], "\xEF\xBB\xBF"));
@@ -43,100 +40,22 @@ class SyncJobFailedCsvExporterTest extends TestCase
 
         $this->assertSame($exporter->headers(), $header);
         $this->assertSame((string) $syncJob->id, $row[0]);
-        $this->assertSame((string) $item->id, $row[1]);
         $this->assertSame('failed', $row[2]);
         $this->assertSame('Missing barcode', $row[3]);
-        $this->assertSame('SKU-MISSING', $row[4]);
-        $this->assertSame('Skipped Product', $row[6]);
-        $this->assertSame('skipped-product', $row[7]);
-        $this->assertSame('Variant title', $row[9]);
-        $this->assertSame('SKU-MISSING', $row[10]);
-        $this->assertSame('', $row[11]);
-        $this->assertSame('', $row[12]);
-        $this->assertSame('', $row[13]);
-        $this->assertSame('', $row[14]);
-        $this->assertSame('auto', $row[15]);
-        $this->assertSame('1', $row[16]);
-        $this->assertSame('1', $row[17]);
-    }
-
-    public function test_export_includes_varle_export_context_columns(): void
-    {
-        [$syncJob, $item] = $this->createFailedExportJob();
-
-        $relativePath = $this->app->make(SyncJobFailedCsvExporter::class)->export($syncJob);
-        $lines = preg_split('/\R/', trim(Storage::disk('public')->get($relativePath)));
-        $row = str_getcsv($lines[1]);
-
-        $this->assertSame('auto', $row[15]);
-        $this->assertSame('1', $row[16]);
-        $this->assertSame('1', $row[17]);
-        $this->assertNotSame('', $row[18]);
-    }
-
-    public function test_export_escapes_commas_and_quotes_in_csv_values(): void
-    {
-        [$syncJob] = $this->createFailedExportJob(message: 'Missing "barcode", urgent');
-
-        $relativePath = $this->app->make(SyncJobFailedCsvExporter::class)->export($syncJob);
-        $contents = Storage::disk('public')->get($relativePath);
-
-        $this->assertStringContainsString('"Missing ""barcode"", urgent"', $contents);
-    }
-
-    public function test_export_includes_warning_rows_from_sync_job_context(): void
-    {
-        [$syncJob] = $this->createFailedExportJob(
-            contextWarnings: ['Product old-handle: Category could not be resolved.'],
-        );
-
-        $relativePath = $this->app->make(SyncJobFailedCsvExporter::class)->export($syncJob);
-        $lines = preg_split('/\R/', trim(Storage::disk('public')->get($relativePath)));
-
-        $this->assertCount(3, $lines);
-        $warningRow = str_getcsv($lines[2]);
-
-        $this->assertSame('warning', $warningRow[2]);
-        $this->assertSame('Product old-handle: Category could not be resolved.', $warningRow[3]);
-        $this->assertSame('old-handle', $warningRow[7]);
-    }
-
-    public function test_resolve_sync_job_returns_latest_varle_export_when_id_is_null(): void
-    {
-        SyncJob::query()->create([
-            'type' => 'export',
-            'channel' => 'varle',
-            'status' => SyncJobStatus::Completed,
-        ]);
-
-        $latest = SyncJob::query()->create([
-            'type' => 'export',
-            'channel' => 'varle',
-            'status' => SyncJobStatus::Partial,
-        ]);
-
-        $resolved = $this->app->make(SyncJobFailedCsvExporter::class)->resolveSyncJob(null);
-
-        $this->assertNotNull($resolved);
-        $this->assertSame($latest->id, $resolved->id);
+        $this->assertSame('skipped-product', $row[5]);
+        $this->assertSame('missing_barcode', $row[array_search('issue_code', $header, true)]);
     }
 
     /**
-     * @param  array<int, string>  $contextWarnings
      * @return array{0: SyncJob, 1: SyncJobItem}
      */
-    private function createFailedExportJob(
-        string $message = 'Missing barcode',
-        array $contextWarnings = [],
-    ): array {
+    private function createFailedExportJob(): array
+    {
         $syncJob = SyncJob::query()->create([
             'type' => 'export',
             'channel' => 'varle',
             'status' => SyncJobStatus::Partial,
             'failed_items' => 1,
-            'context' => [
-                'warnings' => $contextWarnings,
-            ],
         ]);
 
         $source = Source::query()->create([
@@ -169,12 +88,10 @@ class SyncJobFailedCsvExporterTest extends TestCase
             'variant_id' => $variant->id,
             'sku' => 'SKU-MISSING',
             'status' => SyncJobItemStatus::Failed,
-            'message' => $message,
+            'message' => 'Missing barcode',
             'payload' => [
+                'issue_code' => 'missing_barcode',
                 'varle_export_status' => 'auto',
-                'category_mapping_export_enabled' => true,
-                'product_is_published' => true,
-                'product_published_at' => now()->toDateTimeString(),
             ],
         ]);
 

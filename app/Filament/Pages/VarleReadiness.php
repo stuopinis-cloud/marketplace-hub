@@ -6,6 +6,8 @@ use App\Filament\Pages\VarleReadiness\Widgets\LatestShopifyImportWidget;
 use App\Filament\Pages\VarleReadiness\Widgets\LatestVarleExportWidget;
 use App\Filament\Pages\VarleReadiness\Widgets\VarleDataQualityStatsWidget;
 use App\Filament\Pages\VarleReadiness\Widgets\VarleExportApprovalStatsWidget;
+use App\Filament\Pages\VarleReadiness\Widgets\VarleReadinessBreakdownWidget;
+use App\Filament\Pages\VarleReadiness\Widgets\VarleReadinessSummaryWidget;
 use App\Filament\Pages\VarleReadiness\Widgets\VarleRecentProblemsWidget;
 use App\Filament\Resources\Products\ProductResource;
 use App\Services\Marketplace\Varle\VarleReadinessMetrics;
@@ -78,6 +80,19 @@ class VarleReadiness extends Page
                 ->icon(Heroicon::OutlinedArrowTopRightOnSquare)
                 ->url(fn (): string => $metrics->publicFeedUrl($latestExport))
                 ->openUrlInNewTab(),
+            Action::make('refreshReadiness')
+                ->label('Refresh readiness cache')
+                ->icon(Heroicon::OutlinedArrowPath)
+                ->requiresConfirmation()
+                ->action(function (): void {
+                    Artisan::call('varle:refresh-readiness');
+
+                    Notification::make()
+                        ->title('Varle readiness refreshed')
+                        ->body(trim(Artisan::output()) ?: 'Readiness cache updated.')
+                        ->success()
+                        ->send();
+                }),
             Action::make('reviewPendingProducts')
                 ->label('Review pending products')
                 ->icon(Heroicon::OutlinedClipboardDocumentCheck)
@@ -102,8 +117,10 @@ class VarleReadiness extends Page
     protected function getFooterWidgets(): array
     {
         return [
+            VarleReadinessSummaryWidget::class,
             VarleExportApprovalStatsWidget::class,
             VarleDataQualityStatsWidget::class,
+            VarleReadinessBreakdownWidget::class,
             VarleRecentProblemsWidget::class,
         ];
     }

@@ -92,7 +92,7 @@ class VarleProductValidator
             $errors[] = 'Inventory quantity record is required.';
         }
 
-        if (! ($channelConfig['export_zero_stock'] ?? true) && $this->sumInventoryQuantity($variant) <= 0) {
+        if (! ($channelConfig['export_zero_stock'] ?? true) && $this->sumInventoryQuantity($variant) <= 0 && ! $variant->backorder_allowed) {
             $errors[] = 'Variant skipped because export_zero_stock is disabled and quantity is zero.';
         }
 

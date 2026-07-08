@@ -127,6 +127,8 @@ class ShopifyDebugProductOptionsCommand extends Command
             $this->line('  option3_name: '.($variant->option3_name ?? '—'));
             $this->line('  option3_value: '.($variant->option3_value ?? '—'));
             $this->line('  barcode: '.($variant->barcode ?? '—'));
+            $this->line('  inventory_policy: '.($variant->inventory_policy ?? '—'));
+            $this->line('  backorder_allowed: '.($variant->backorder_allowed ? 'yes' : 'no'));
             $this->line('  image_url: '.(filled($variant->image_url) ? 'yes' : 'no'));
 
             if ($this->output->isVerbose() && filled($variant->image_url)) {

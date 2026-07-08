@@ -4,6 +4,7 @@ namespace App\Services\Marketplace\Varle;
 
 use App\Enums\ProductStatus;
 use App\Enums\VarleExportStatus;
+use App\Filament\Resources\Products\ProductResource;
 use App\Models\CategoryMapping;
 use App\Models\MarketplaceChannel;
 use App\Models\Product;
@@ -154,6 +155,173 @@ class VarleReadinessMetrics
         }
 
         return (int) ($export->context['skipped_variants'] ?? $export->failed_items ?? 0);
+    }
+
+    /**
+     * @return array{
+     *     ready_for_export: int,
+     *     pending_review: int,
+     *     forced_include: int,
+     *     excluded: int,
+     *     missing_barcode: int,
+     *     missing_category_mapping: int,
+     *     missing_variant_images: int,
+     *     no_images: int,
+     *     out_of_stock_no_backorder: int,
+     *     backorder_exportable: int,
+     *     vendor_delivery_missing: int,
+     *     vendor_disabled: int,
+     *     products_with_warnings: int,
+     * }
+     */
+    public function readinessSummary(): array
+    {
+        return [
+            'ready_for_export' => Product::query()->where('varle_is_ready', true)->count(),
+            'pending_review' => Product::query()
+                ->where('varle_export_status', VarleExportStatus::PendingReview)
+                ->count(),
+            'forced_include' => Product::query()
+                ->where('varle_export_status', VarleExportStatus::Include)
+                ->count(),
+            'excluded' => Product::query()
+                ->where('varle_export_status', VarleExportStatus::Exclude)
+                ->count(),
+            'missing_barcode' => Product::query()
+                ->whereIn('varle_barcode_status', ['some_variants_missing_barcode', 'no_barcodes'])
+                ->count(),
+            'missing_category_mapping' => Product::query()
+                ->where('varle_category_status', 'missing')
+                ->count(),
+            'missing_variant_images' => Product::query()
+                ->whereIn('varle_image_status', ['some_exportable_variants_missing_image', 'no_variant_images'])
+                ->count(),
+            'no_images' => Product::query()
+                ->where('varle_image_status', 'no_images')
+                ->count(),
+            'out_of_stock_no_backorder' => Product::query()
+                ->where('varle_stock_status', 'out_of_stock_blocked')
+                ->count(),
+            'backorder_exportable' => Product::query()
+                ->whereIn('varle_stock_status', ['backorder_only', 'mixed_stock_backorder'])
+                ->count(),
+            'vendor_delivery_missing' => Product::query()
+                ->where('varle_vendor_delivery_rule_status', 'default_rule_used')
+                ->count(),
+            'vendor_disabled' => Product::query()
+                ->whereJsonContains('varle_issue_codes', 'vendor_disabled_for_varle')
+                ->count(),
+            'products_with_warnings' => Product::query()
+                ->where('varle_issue_count', '>', 0)
+                ->count(),
+        ];
+    }
+
+    /**
+     * @return Collection<int, object{label: string, count: int}>
+     */
+    public function breakdownByVendor(int $limit = 15): Collection
+    {
+        return Product::query()
+            ->selectRaw('coalesce(nullif(vendor, \'\'), \'(no vendor)\') as label, count(*) as count')
+            ->groupBy('label')
+            ->orderByDesc('count')
+            ->limit($limit)
+            ->get();
+    }
+
+    /**
+     * @return Collection<int, object{label: string, count: int}>
+     */
+    public function breakdownByProductType(int $limit = 15): Collection
+    {
+        return Product::query()
+            ->selectRaw('coalesce(nullif(product_type, \'\'), \'(no type)\') as label, count(*) as count')
+            ->groupBy('label')
+            ->orderByDesc('count')
+            ->limit($limit)
+            ->get();
+    }
+
+    /**
+     * @return Collection<int, object{label: string, count: int}>
+     */
+    public function breakdownByBarcodeStatus(): Collection
+    {
+        return Product::query()
+            ->selectRaw('coalesce(varle_barcode_status, \'unknown\') as label, count(*) as count')
+            ->groupBy('label')
+            ->orderByDesc('count')
+            ->get();
+    }
+
+    /**
+     * @return Collection<int, object{label: string, count: int}>
+     */
+    public function breakdownByStockStatus(): Collection
+    {
+        return Product::query()
+            ->selectRaw('coalesce(varle_stock_status, \'unknown\') as label, count(*) as count')
+            ->groupBy('label')
+            ->orderByDesc('count')
+            ->get();
+    }
+
+    /**
+     * @return Collection<int, object{label: string, count: int}>
+     */
+    public function breakdownByCategoryStatus(): Collection
+    {
+        return Product::query()
+            ->selectRaw('coalesce(varle_category_status, \'unknown\') as label, count(*) as count')
+            ->groupBy('label')
+            ->orderByDesc('count')
+            ->get();
+    }
+
+    /**
+     * @return array<string, int>
+     */
+    public function breakdownByIssueCode(): array
+    {
+        $counts = [];
+
+        foreach ($this->knownIssueCodes() as $issueCode) {
+            $counts[$issueCode] = Product::query()
+                ->whereJsonContains('varle_issue_codes', $issueCode)
+                ->count();
+        }
+
+        return $counts;
+    }
+
+    /**
+     * @return list<string>
+     */
+    public function knownIssueCodes(): array
+    {
+        return [
+            'pending_review',
+            'excluded',
+            'unpublished',
+            'missing_category_mapping',
+            'missing_barcode',
+            'missing_variant_image',
+            'no_images',
+            'price_invalid',
+            'out_of_stock_no_backorder',
+            'no_exportable_variants',
+            'missing_delivery_rule',
+            'vendor_disabled_for_varle',
+            'backorder_disabled_for_vendor',
+        ];
+    }
+
+    public function productsFilterUrl(array $filters): string
+    {
+        return ProductResource::getUrl('index', [
+            'tableFilters' => $filters,
+        ]);
     }
 
     /**
