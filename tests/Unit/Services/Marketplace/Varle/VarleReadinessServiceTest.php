@@ -45,4 +45,41 @@ class VarleReadinessServiceTest extends TestCase
         $this->assertNotNull($product->varle_readiness_cached_at);
         $this->assertSame('all_variants_have_barcode', $product->varle_barcode_status);
     }
+
+    public function test_simple_product_readiness_reports_simple_export_structure(): void
+    {
+        $variant = VarleCatalogFixtures::createSimpleDefaultTitleProduct();
+        $service = $this->app->make(VarleReadinessService::class);
+
+        $analysis = $service->analyze($variant->product->fresh(['variants.inventoryLevels', 'images', 'sourceCategories']));
+
+        $this->assertSame('simple_product', $analysis['export_structure']);
+        $this->assertFalse($analysis['will_generate_variants_block']);
+        $this->assertTrue($analysis['is_simple_shopify_product']);
+        $this->assertSame([], $analysis['meaningful_options']);
+        $this->assertSame(1, $analysis['shopify_total_variants']);
+    }
+
+    public function test_simple_product_without_variant_image_can_be_ready_with_gallery(): void
+    {
+        $variant = VarleCatalogFixtures::createSimpleDefaultTitleProduct(variantOverrides: ['image_url' => null]);
+        $service = $this->app->make(VarleReadinessService::class);
+
+        $analysis = $service->analyze($variant->product->fresh(['variants.inventoryLevels', 'images', 'sourceCategories']));
+
+        $this->assertSame('has_fallback_images', $analysis['image_status']);
+        $this->assertNotContains('missing_variant_image', $analysis['issue_codes']);
+    }
+
+    public function test_variant_product_readiness_reports_variant_export_structure(): void
+    {
+        $product = VarleCatalogFixtures::createSizeOnlyProduct();
+        $service = $this->app->make(VarleReadinessService::class);
+
+        $analysis = $service->analyze($product->fresh(['variants.inventoryLevels', 'images', 'sourceCategories']));
+
+        $this->assertSame('variant_product', $analysis['export_structure']);
+        $this->assertTrue($analysis['will_generate_variants_block']);
+        $this->assertNotEmpty($analysis['meaningful_options']);
+    }
 }

@@ -74,6 +74,8 @@ class VarleReadinessService
             $issueMessages[] = VarleVariantPresenter::missingExportImagesMessage($channelConfig);
         }
 
+        $isSimpleProduct = VarleVariantPresenter::isSimpleShopifyProduct($product);
+
         if (($deliveryRule['enabled'] ?? true) === false) {
             $issueCodes[] = 'vendor_disabled_for_varle';
             $issueMessages[] = 'Vendor delivery rule is disabled.';
@@ -133,7 +135,12 @@ class VarleReadinessService
 
             if ($exportable) {
                 $groupRows = [['variant' => $variant, 'quantity' => $quantity]];
-                $images = VarleVariantPresenter::resolveExportImageUrls($product, $groupRows, $channelConfig);
+                $images = VarleVariantPresenter::resolveExportImageUrls(
+                    $product,
+                    $groupRows,
+                    $channelConfig,
+                    $isSimpleProduct,
+                );
                 if ($images['urls'] === []) {
                     $exportable = false;
                     $issueCode = 'missing_variant_image';
@@ -205,14 +212,24 @@ class VarleReadinessService
             && ! in_array('excluded', $issueCodes, true)
             && ! in_array('unpublished', $issueCodes, true);
 
+        $exportableRows = collect($variantDiagnostics)
+            ->filter(fn (array $row): bool => $row['exportable'])
+            ->map(fn (array $row): array => [
+                'variant' => $product->variants->firstWhere('id', $row['variant_id']),
+                'quantity' => $row['quantity'],
+            ])
+            ->filter(fn (array $row): bool => $row['variant'] instanceof ProductVariant)
+            ->values()
+            ->all();
+
+        $exportStructure = $this->resolveExportStructure($product, $exportableRows);
+
         $imageResolution = $exportableVariants > 0
             ? VarleVariantPresenter::resolveExportImageUrls(
                 $product,
-                collect($variantDiagnostics)->filter(fn (array $row): bool => $row['exportable'])->map(fn (array $row): array => [
-                    'variant' => $product->variants->firstWhere('id', $row['variant_id']),
-                    'quantity' => $row['quantity'],
-                ])->filter(fn (array $row): bool => $row['variant'] instanceof ProductVariant)->values()->all(),
+                $exportableRows,
                 $channelConfig,
+                ! $exportStructure['will_generate_variants_block'],
             )
             : ['urls' => [], 'variant_images_count' => 0, 'generic_gallery_images_count' => 0, 'forbidden_variant_images_count' => 0];
 
@@ -237,6 +254,13 @@ class VarleReadinessService
             'variant_diagnostics' => $variantDiagnostics,
             'image_resolution' => $imageResolution,
             'generated_product_ids' => $this->previewGeneratedProductIds($product, $variantDiagnostics),
+            'export_structure' => $exportStructure['export_structure'],
+            'meaningful_options' => $exportStructure['meaningful_options'],
+            'shopify_total_variants' => $exportStructure['shopify_total_variants'],
+            'included_variants_count' => $exportStructure['included_variants_count'],
+            'will_generate_variants_block' => $exportStructure['will_generate_variants_block'],
+            'export_groups' => $exportStructure['export_groups'],
+            'is_simple_shopify_product' => $isSimpleProduct,
         ];
     }
 
@@ -342,6 +366,18 @@ class VarleReadinessService
             return $product->images->isNotEmpty() ? 'has_fallback_images' : 'no_images';
         }
 
+        if (VarleVariantPresenter::isSimpleShopifyProduct($product)) {
+            $variant = $product->variants->first();
+
+            if ($variant instanceof ProductVariant && filled($variant->image_url)) {
+                return 'all_exportable_variants_have_image';
+            }
+
+            return $product->images->isNotEmpty()
+                ? 'has_fallback_images'
+                : 'no_images';
+        }
+
         $withImage = $product->variants->filter(fn (ProductVariant $variant): bool => filled($variant->image_url))->count();
 
         if ($withImage === 0) {
@@ -428,5 +464,69 @@ class VarleReadinessService
             ->map(fn (string $color): string => $product->handle.'-'.\Illuminate\Support\Str::slug($color))
             ->values()
             ->all();
+    }
+
+    /**
+     * @param  array<int, array{variant: ProductVariant, quantity: int}>  $exportableRows
+     * @return array{
+     *     export_structure: string,
+     *     meaningful_options: array<int, array{name: string, values: array<int, string>}>,
+     *     shopify_total_variants: int,
+     *     included_variants_count: int,
+     *     will_generate_variants_block: bool,
+     *     export_groups: array<int, array<string, mixed>>
+     * }
+     */
+    private function resolveExportStructure(Product $product, array $exportableRows): array
+    {
+        $meaningfulOptions = VarleVariantPresenter::detectMeaningfulOptions($product);
+
+        if ($exportableRows === []) {
+            return [
+                'export_structure' => VarleVariantPresenter::isSimpleShopifyProduct($product)
+                    ? 'simple_product'
+                    : 'variant_product',
+                'meaningful_options' => $meaningfulOptions,
+                'shopify_total_variants' => $product->variants->count(),
+                'included_variants_count' => 0,
+                'will_generate_variants_block' => false,
+                'export_groups' => [],
+            ];
+        }
+
+        $hasColor = collect($exportableRows)->contains(
+            fn (array $row): bool => filled(VarleVariantPresenter::colorValue($product, $row['variant'])),
+        );
+
+        $groups = $hasColor
+            ? collect($exportableRows)->groupBy(
+                fn (array $row): string => (string) VarleVariantPresenter::colorValue($product, $row['variant']),
+            )
+            : collect(['' => $exportableRows]);
+
+        $exportGroups = [];
+        $willGenerateVariantsBlock = false;
+
+        foreach ($groups as $colorValue => $rows) {
+            $rows = $rows instanceof \Illuminate\Support\Collection ? $rows->values()->all() : (array) $rows;
+            $groupWillOutputVariants = VarleVariantPresenter::shouldOutputVariants($product, $rows);
+            $willGenerateVariantsBlock = $willGenerateVariantsBlock || $groupWillOutputVariants;
+
+            $exportGroups[] = [
+                'color_value' => filled($colorValue) ? (string) $colorValue : null,
+                'variant_count' => count($rows),
+                'export_structure' => $groupWillOutputVariants ? 'variant_product' : 'simple_product',
+                'will_generate_variants_block' => $groupWillOutputVariants,
+            ];
+        }
+
+        return [
+            'export_structure' => $willGenerateVariantsBlock ? 'variant_product' : 'simple_product',
+            'meaningful_options' => $meaningfulOptions,
+            'shopify_total_variants' => $product->variants->count(),
+            'included_variants_count' => count($exportableRows),
+            'will_generate_variants_block' => $willGenerateVariantsBlock,
+            'export_groups' => $exportGroups,
+        ];
     }
 }

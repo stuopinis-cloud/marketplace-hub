@@ -61,6 +61,11 @@ class ProductVariant extends Model
         return $this->hasMany(InventoryLevel::class, 'variant_id');
     }
 
+    public function supplierProducts(): HasMany
+    {
+        return $this->hasMany(SupplierProduct::class, 'product_variant_id');
+    }
+
     public function marketplaceListings(): HasMany
     {
         return $this->hasMany(MarketplaceListing::class, 'variant_id');

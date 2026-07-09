@@ -71,6 +71,31 @@ class VarleVariantPresenterTest extends TestCase
         ]]));
     }
 
+    public function test_should_not_output_variants_for_default_title_option(): void
+    {
+        $variant = VarleCatalogFixtures::createSimpleDefaultTitleProduct();
+        $product = $variant->product;
+
+        $this->assertFalse(VarleVariantPresenter::shouldOutputVariants($product, [[
+            'variant' => $variant,
+            'quantity' => 5,
+        ]]));
+        $this->assertTrue(VarleVariantPresenter::isSimpleShopifyProduct($product));
+        $this->assertSame([], VarleVariantPresenter::detectMeaningfulOptions($product));
+    }
+
+    public function test_is_meaningful_option_rejects_default_title_values(): void
+    {
+        $this->assertFalse(VarleVariantPresenter::isMeaningfulOption([
+            'name' => 'Title',
+            'value' => 'Default Title',
+        ]));
+        $this->assertTrue(VarleVariantPresenter::isMeaningfulOption([
+            'name' => 'Dydis',
+            'value' => 'M',
+        ]));
+    }
+
     public function test_get_non_color_options_excludes_color_option(): void
     {
         $product = VarleCatalogFixtures::createColorSizeProduct();

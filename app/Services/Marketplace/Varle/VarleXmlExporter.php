@@ -263,10 +263,13 @@ class VarleXmlExporter
                 continue;
             }
 
+            $isSimpleGroup = VarleVariantPresenter::isSimpleExportGroup($product, $groupValidVariants);
+
             $imageResolution = VarleVariantPresenter::resolveExportImageUrls(
                 $product,
                 $groupValidVariants,
                 $config,
+                $isSimpleGroup,
             );
 
             if ($imageResolution['urls'] === []) {
@@ -408,7 +411,7 @@ class VarleXmlExporter
     ): array {
         $category = (string) $categoryExplanation['resolved_category'];
         $multiplier = (float) ($config['price_multiplier'] ?? 1);
-        $outputVariants = $this->shouldOutputVariants($validVariants);
+        $outputVariants = VarleVariantPresenter::shouldOutputVariants($product, $validVariants);
         $firstVariant = $validVariants[0]['variant'];
 
         $adjustedPrices = collect($validVariants)->map(
@@ -430,7 +433,12 @@ class VarleXmlExporter
             $title .= ', '.$colorValue;
         }
 
-        $imageResolution ??= VarleVariantPresenter::resolveExportImageUrls($product, $validVariants, $config);
+        $imageResolution ??= VarleVariantPresenter::resolveExportImageUrls(
+            $product,
+            $validVariants,
+            $config,
+            ! $outputVariants,
+        );
         $deliveryRule = $this->deliveryResolver->resolveForProduct($product, $config);
         $deliveryClasses = collect($validVariants)->pluck('delivery_class')->filter()->values()->all();
 
@@ -457,8 +465,9 @@ class VarleXmlExporter
         }
 
         if ($outputVariants) {
-            $groupTitle = $this->nonColorGroupTitle($validVariants);
+            $groupTitle = VarleVariantPresenter::nonColorGroupTitle($product);
             $payload['variants'] = collect($validVariants)->map(function (array $row) use (
+                $product,
                 $groupTitle,
                 $basePrice,
                 $multiplier,
@@ -468,7 +477,7 @@ class VarleXmlExporter
 
                 return [
                     'group_title' => $groupTitle,
-                    'title' => $this->variantDisplayTitle($variant),
+                    'title' => VarleVariantPresenter::variantDisplayTitle($product, $variant),
                     'quantity' => $row['quantity'],
                     'barcode' => (string) $variant->barcode,
                     'price' => $this->formatPrice($variantPrice - $basePrice),
@@ -1071,52 +1080,6 @@ class VarleXmlExporter
     }
 
     /**
-     * @param  array<int, array{variant: ProductVariant, quantity: int}>  $validVariants
-     */
-    private function shouldOutputVariants(array $validVariants): bool
-    {
-        if (count($validVariants) > 1) {
-            return true;
-        }
-
-        if ($validVariants === []) {
-            return false;
-        }
-
-        return $this->getNonColorOptions($validVariants[0]['variant']) !== [];
-    }
-
-    /**
-     * @param  array<int, array{variant: ProductVariant, quantity: int}>  $validVariants
-     */
-    private function nonColorGroupTitle(array $validVariants): string
-    {
-        $names = collect($this->getNonColorOptions($validVariants[0]['variant']))
-            ->pluck('name')
-            ->unique()
-            ->values();
-
-        if ($names->isEmpty()) {
-            return 'Dydis';
-        }
-
-        return $names->implode(' / ');
-    }
-
-    private function variantDisplayTitle(ProductVariant $variant): string
-    {
-        $nonColorOptions = $this->getNonColorOptions($variant);
-
-        if ($nonColorOptions !== []) {
-            return collect($nonColorOptions)
-                ->pluck('value')
-                ->implode(' / ');
-        }
-
-        return filled($variant->title) ? (string) $variant->title : 'Default';
-    }
-
-    /**
      * @return array<int, array{name: string, value: string}>
      */
     private function getVariantOptions(ProductVariant $variant): array
@@ -1167,17 +1130,6 @@ class VarleXmlExporter
         }
 
         return null;
-    }
-
-    /**
-     * @return array<int, array{name: string, value: string}>
-     */
-    private function getNonColorOptions(ProductVariant $variant): array
-    {
-        return array_values(array_filter(
-            $this->getVariantOptions($variant),
-            fn (array $option): bool => ! $this->isColorOptionName($option['name']),
-        ));
     }
 
     private function isColorOptionName(string $name): bool
@@ -1294,10 +1246,13 @@ class VarleXmlExporter
                 continue;
             }
 
+            $isSimpleGroup = VarleVariantPresenter::isSimpleExportGroup($product, $groupValidVariants);
+
             $imageResolution = VarleVariantPresenter::resolveExportImageUrls(
                 $product,
                 $groupValidVariants,
                 $config,
+                $isSimpleGroup,
             );
 
             if ($imageResolution['urls'] === []) {

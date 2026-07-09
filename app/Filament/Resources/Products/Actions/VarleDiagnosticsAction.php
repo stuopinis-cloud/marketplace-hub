@@ -35,6 +35,14 @@ class VarleDiagnosticsAction
                     'Gate decision: '.e($analysis['gate_allowed'] ? 'allowed' : 'blocked').' — '.e((string) ($analysis['gate_message'] ?? '')),
                     'Issue codes: '.e(implode(', ', $analysis['issue_codes'] ?? [])),
                     '',
+                    '<strong>Export structure</strong>',
+                    'Structure: '.e((string) ($analysis['export_structure'] ?? '—')),
+                    'Simple Shopify product: '.(($analysis['is_simple_shopify_product'] ?? false) ? 'yes' : 'no'),
+                    'Will generate &lt;variants&gt;: '.(($analysis['will_generate_variants_block'] ?? false) ? 'yes' : 'no'),
+                    'Shopify total variants: '.(int) ($analysis['shopify_total_variants'] ?? 0),
+                    'Included variants: '.(int) ($analysis['included_variants_count'] ?? 0),
+                    'Meaningful options: '.e(self::formatMeaningfulOptions($analysis['meaningful_options'] ?? [])),
+                    '',
                     '<strong>Variants</strong>',
                 ];
 
@@ -67,5 +75,23 @@ class VarleDiagnosticsAction
             })
             ->modalSubmitAction(false)
             ->modalCancelActionLabel('Close');
+    }
+
+    /**
+     * @param  array<int, array{name?: string, values?: array<int, string>}>  $meaningfulOptions
+     */
+    private static function formatMeaningfulOptions(array $meaningfulOptions): string
+    {
+        if ($meaningfulOptions === []) {
+            return 'none';
+        }
+
+        return collect($meaningfulOptions)
+            ->map(function (array $option): string {
+                $values = implode(', ', $option['values'] ?? []);
+
+                return ($option['name'] ?? '—').': '.$values;
+            })
+            ->implode('; ');
     }
 }

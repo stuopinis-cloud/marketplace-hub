@@ -38,6 +38,46 @@ class VarleVariantPresenter
         ], true);
     }
 
+    public static function isDefaultShopifyOptionName(string $name): bool
+    {
+        return mb_strtolower(trim($name)) === 'title';
+    }
+
+    public static function isDefaultShopifyOptionValue(?string $value): bool
+    {
+        $normalized = mb_strtolower(trim((string) $value));
+
+        return in_array($normalized, ['default title', 'default'], true);
+    }
+
+    public static function isDefaultShopifyVariantTitle(?string $title): bool
+    {
+        return self::isDefaultShopifyOptionValue($title);
+    }
+
+    /**
+     * @param  array{name?: string, value?: string}  $option
+     */
+    public static function isMeaningfulOption(array $option): bool
+    {
+        $name = (string) ($option['name'] ?? '');
+        $value = (string) ($option['value'] ?? '');
+
+        if (! filled($name) || ! filled($value)) {
+            return false;
+        }
+
+        if (self::isDefaultShopifyOptionValue($value)) {
+            return false;
+        }
+
+        if (self::isDefaultShopifyOptionName($name)) {
+            return false;
+        }
+
+        return true;
+    }
+
     public static function productHasColorOption(Product $product): bool
     {
         if (self::optionNames($product)->contains(
@@ -97,8 +137,74 @@ class VarleVariantPresenter
     {
         return array_values(array_filter(
             self::getSelectedOptions($product, $variant),
+            fn (array $option): bool => ! self::isColorOptionName($option['name'])
+                && self::isMeaningfulOption($option),
+        ));
+    }
+
+    /**
+     * @return array<int, array{name: string, value: string}>
+     */
+    public static function getMeaningfulOptions(Product $product, ProductVariant $variant): array
+    {
+        return array_values(array_filter(
+            self::getSelectedOptions($product, $variant),
+            fn (array $option): bool => self::isMeaningfulOption($option),
+        ));
+    }
+
+    /**
+     * @return array<int, array{name: string, value: string}>
+     */
+    public static function getMeaningfulNonColorOptions(Product $product, ProductVariant $variant): array
+    {
+        return array_values(array_filter(
+            self::getMeaningfulOptions($product, $variant),
             fn (array $option): bool => ! self::isColorOptionName($option['name']),
         ));
+    }
+
+    /**
+     * @return array<int, array{name: string, values: array<int, string>}>
+     */
+    public static function detectMeaningfulOptions(Product $product): array
+    {
+        $byName = [];
+
+        foreach ($product->variants as $variant) {
+            foreach (self::getMeaningfulOptions($product, $variant) as $option) {
+                $name = $option['name'];
+
+                if (! isset($byName[$name])) {
+                    $byName[$name] = [
+                        'name' => $name,
+                        'values' => [],
+                    ];
+                }
+
+                $byName[$name]['values'][$option['value']] = true;
+            }
+        }
+
+        return array_values(array_map(
+            fn (array $row): array => [
+                'name' => $row['name'],
+                'values' => array_keys($row['values']),
+            ],
+            $byName,
+        ));
+    }
+
+    public static function isSimpleShopifyProduct(Product $product): bool
+    {
+        if ($product->variants->count() !== 1) {
+            return false;
+        }
+
+        $variant = $product->variants->first();
+
+        return $variant instanceof ProductVariant
+            && self::getMeaningfulOptions($product, $variant) === [];
     }
 
     /**
@@ -116,7 +222,15 @@ class VarleVariantPresenter
             return false;
         }
 
-        return self::getNonColorOptions($product, $rows[0]['variant']) !== [];
+        return self::getMeaningfulNonColorOptions($product, $rows[0]['variant']) !== [];
+    }
+
+    /**
+     * @param  array<int, array{variant: ProductVariant, quantity: int}>|Collection<int, array{variant: ProductVariant, quantity: int}>  $validVariants
+     */
+    public static function isSimpleExportGroup(Product $product, array|Collection $validVariants): bool
+    {
+        return ! self::shouldOutputVariants($product, $validVariants);
     }
 
     public static function colorValue(Product $product, ProductVariant $variant): ?string
@@ -177,8 +291,13 @@ class VarleVariantPresenter
      *     forbidden_variant_images_count: int
      * }
      */
-    public static function resolveExportImageUrls(Product $product, array $validVariants, array $config): array
-    {
+    public static function resolveExportImageUrls(
+        Product $product,
+        array $validVariants,
+        array $config,
+        ?bool $simpleProduct = null,
+    ): array {
+        $simpleProduct ??= self::isSimpleExportGroup($product, $validVariants);
         $includedVariantIds = collect($validVariants)
             ->pluck('variant.id')
             ->filter()
@@ -210,7 +329,9 @@ class VarleVariantPresenter
         }
 
         if ($variantImagesCount === 0) {
-            if ($config['allow_fallback_product_images'] ?? false) {
+            $allowGallery = ($config['allow_fallback_product_images'] ?? false) || $simpleProduct;
+
+            if ($allowGallery) {
                 $fallbackUrls = $product->images
                     ->sortBy('position')
                     ->pluck('url')
@@ -377,6 +498,10 @@ class VarleVariantPresenter
             return true;
         }
 
+        if (self::isSimpleShopifyProduct($product) && $product->images->isNotEmpty()) {
+            return true;
+        }
+
         return ($config['allow_fallback_product_images'] ?? false) && $product->images->isNotEmpty();
     }
 
@@ -428,7 +553,8 @@ class VarleVariantPresenter
             ->pluck('name')
             ->filter()
             ->map(fn ($name) => (string) $name)
-            ->reject(fn (string $name): bool => self::isColorOptionName($name))
+            ->reject(fn (string $name): bool => self::isColorOptionName($name)
+                || self::isDefaultShopifyOptionName($name))
             ->values();
 
         if ($fromProduct->isNotEmpty()) {

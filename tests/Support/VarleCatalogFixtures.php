@@ -430,6 +430,36 @@ class VarleCatalogFixtures
         ]);
     }
 
+    public static function createSimpleDefaultTitleProduct(
+        array $productOverrides = [],
+        array $variantOverrides = [],
+    ): ProductVariant {
+        return self::createExportableVariant(array_merge([
+            'title' => 'Simple product',
+            'handle' => 'simple-default-title-product',
+            'raw_payload' => [
+                'options' => [
+                    ['name' => 'Title'],
+                ],
+            ],
+        ], $productOverrides), array_merge([
+            'sku' => 'SKU-SIMPLE',
+            'barcode' => '5901234567890',
+            'title' => 'Default Title',
+            'option1' => 'Default Title',
+            'option1_name' => 'Title',
+            'option1_value' => 'Default Title',
+            'option2' => null,
+            'option2_name' => null,
+            'option2_value' => null,
+            'raw_payload' => [
+                'selectedOptions' => [
+                    ['name' => 'Title', 'value' => 'Default Title'],
+                ],
+            ],
+        ], self::normalizeVariantOptionFields($variantOverrides)));
+    }
+
     /**
      * @param  array<string, mixed>  $definition
      * @return array<string, mixed>

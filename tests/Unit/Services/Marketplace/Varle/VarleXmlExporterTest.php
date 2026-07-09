@@ -769,6 +769,176 @@ class VarleXmlExporterTest extends TestCase
         $this->assertStringContainsString('<image><![CDATA[https://cdn.example.com/image.jpg]]></image>', $xml);
     }
 
+    public function test_default_title_single_variant_exports_without_variants(): void
+    {
+        VarleCatalogFixtures::createSimpleDefaultTitleProduct();
+
+        $this->makeExporter()->export();
+        $xml = Storage::disk('public')->get('feeds/varle.xml');
+        $section = $this->extractProductXmlSection($xml, 'simple-default-title-product');
+
+        $this->assertStringNotContainsString('<variants>', $section);
+        $this->assertStringContainsString('<quantity>5</quantity>', $section);
+        $this->assertStringContainsString('<barcode>5901234567890</barcode>', $section);
+        $this->assertStringNotContainsString('<variant ', $section);
+    }
+
+    public function test_simple_product_does_not_output_variant_level_quantity_or_barcode(): void
+    {
+        VarleCatalogFixtures::createSimpleDefaultTitleProduct();
+
+        $this->makeExporter()->export();
+        $section = $this->extractProductXmlSection(
+            Storage::disk('public')->get('feeds/varle.xml'),
+            'simple-default-title-product',
+        );
+
+        $this->assertDoesNotMatchRegularExpression('/<variant[^>]*>[\s\S]*?<quantity>/', $section);
+        $this->assertDoesNotMatchRegularExpression('/<variant[^>]*>[\s\S]*?<barcode>/', $section);
+    }
+
+    public function test_simple_product_missing_barcode_is_skipped(): void
+    {
+        VarleCatalogFixtures::createSimpleDefaultTitleProduct(variantOverrides: ['barcode' => null]);
+
+        $result = $this->makeExporter()->export();
+
+        $this->assertSame(0, $result->exportedVariants);
+        $this->assertGreaterThan(0, $result->skippedVariants);
+        $this->assertNotNull(SyncJobItem::query()->where('message', 'Missing barcode')->first());
+        $this->assertStringNotContainsString('<product>', Storage::disk('public')->get('feeds/varle.xml'));
+    }
+
+    public function test_simple_product_uses_product_gallery_when_variant_image_missing(): void
+    {
+        VarleCatalogFixtures::createSimpleDefaultTitleProduct(variantOverrides: ['image_url' => null]);
+
+        $this->makeExporter()->export();
+        $section = $this->extractProductXmlSection(
+            Storage::disk('public')->get('feeds/varle.xml'),
+            'simple-default-title-product',
+        );
+
+        $this->assertStringNotContainsString('<variants>', $section);
+        $this->assertStringContainsString('<image><![CDATA[https://cdn.example.com/image.jpg]]></image>', $section);
+    }
+
+    public function test_simple_product_in_stock_exports_vendor_delivery_text(): void
+    {
+        \App\Models\VendorDeliveryRule::query()->create([
+            'vendor' => 'Vendor Name',
+            'enabled' => true,
+            'in_stock_delivery_text' => '2-4 d.d.',
+            'backorder_delivery_text' => '5-10 d.d.',
+            'allow_backorder_export' => true,
+        ]);
+
+        VarleCatalogFixtures::createSimpleDefaultTitleProduct();
+
+        $this->makeExporter()->export();
+        $section = $this->extractProductXmlSection(
+            Storage::disk('public')->get('feeds/varle.xml'),
+            'simple-default-title-product',
+        );
+
+        $this->assertStringContainsString('<delivery_text><![CDATA[2-4 d.d.]]></delivery_text>', $section);
+        $this->assertStringContainsString('<quantity>5</quantity>', $section);
+    }
+
+    public function test_simple_product_backorder_allowed_exports_backorder_delivery_text(): void
+    {
+        \App\Models\VendorDeliveryRule::query()->create([
+            'vendor' => 'Vendor Name',
+            'enabled' => true,
+            'in_stock_delivery_text' => '1-2 d.d.',
+            'backorder_delivery_text' => '5-10 d.d.',
+            'allow_backorder_export' => true,
+        ]);
+
+        $variant = VarleCatalogFixtures::createSimpleDefaultTitleProduct();
+        $variant->update([
+            'inventory_policy' => 'CONTINUE',
+            'backorder_allowed' => true,
+        ]);
+        $variant->inventoryLevels()->update(['quantity' => 0]);
+
+        $this->makeExporter()->export();
+        $section = $this->extractProductXmlSection(
+            Storage::disk('public')->get('feeds/varle.xml'),
+            'simple-default-title-product',
+        );
+
+        $this->assertStringNotContainsString('<variants>', $section);
+        $this->assertStringContainsString('<quantity>0</quantity>', $section);
+        $this->assertStringContainsString('<delivery_text><![CDATA[5-10 d.d.]]></delivery_text>', $section);
+    }
+
+    public function test_simple_product_out_of_stock_without_backorder_is_skipped(): void
+    {
+        $variant = VarleCatalogFixtures::createSimpleDefaultTitleProduct();
+        $variant->update([
+            'inventory_policy' => 'DENY',
+            'backorder_allowed' => false,
+        ]);
+        $variant->inventoryLevels()->update(['quantity' => 0]);
+
+        $result = $this->makeExporter()->export();
+
+        $this->assertSame(0, $result->exportedVariants);
+        $this->assertStringNotContainsString('<product>', Storage::disk('public')->get('feeds/varle.xml'));
+    }
+
+    public function test_variant_product_has_no_product_level_quantity_or_barcode(): void
+    {
+        VarleCatalogFixtures::createSizeOnlyProduct();
+
+        $this->makeExporter()->export();
+        $section = $this->extractProductXmlSection(
+            Storage::disk('public')->get('feeds/varle.xml'),
+            'size-only-product',
+        );
+
+        $this->assertStringContainsString('<variants>', $section);
+        $productWithoutVariants = preg_replace('/<variants>.*?<\/variants>/s', '', $section);
+        $this->assertStringNotContainsString('<quantity>', $productWithoutVariants);
+        $this->assertStringNotContainsString('<barcode>', $productWithoutVariants);
+    }
+
+    public function test_color_split_group_with_single_variant_and_no_size_exports_as_simple_product(): void
+    {
+        VarleCatalogFixtures::createMultiVariantProduct(
+            productOverrides: [
+                'handle' => 'single-color-shirt',
+                'raw_payload' => ['options' => [['name' => 'Color']]],
+            ],
+            variantDefinitions: [
+                [
+                    'sku' => 'SKU-BLACK',
+                    'barcode' => '4770000000999',
+                    'price' => 20,
+                    'option1' => 'Black',
+                    'option1_name' => 'Color',
+                    'option1_value' => 'Black',
+                    'raw_payload' => [
+                        'selectedOptions' => [
+                            ['name' => 'Color', 'value' => 'Black'],
+                        ],
+                    ],
+                ],
+            ],
+        );
+
+        $this->makeExporter()->export();
+        $section = $this->extractProductXmlSection(
+            Storage::disk('public')->get('feeds/varle.xml'),
+            'single-color-shirt-black',
+        );
+
+        $this->assertStringNotContainsString('<variants>', $section);
+        $this->assertStringContainsString('<quantity>1</quantity>', $section);
+        $this->assertStringContainsString('<barcode>4770000000999</barcode>', $section);
+    }
+
     private function makeExporter(): VarleXmlExporter
     {
         return $this->app->make(VarleXmlExporter::class);
