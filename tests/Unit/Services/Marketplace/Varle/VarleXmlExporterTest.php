@@ -847,7 +847,7 @@ class VarleXmlExporterTest extends TestCase
         $this->assertStringContainsString('<quantity>5</quantity>', $section);
     }
 
-    public function test_simple_product_backorder_allowed_exports_backorder_delivery_text(): void
+    public function test_simple_product_backorder_allowed_is_not_exported_with_zero_quantity(): void
     {
         \App\Models\VendorDeliveryRule::query()->create([
             'vendor' => 'Vendor Name',
@@ -864,15 +864,11 @@ class VarleXmlExporterTest extends TestCase
         ]);
         $variant->inventoryLevels()->update(['quantity' => 0]);
 
-        $this->makeExporter()->export();
-        $section = $this->extractProductXmlSection(
-            Storage::disk('public')->get('feeds/varle.xml'),
-            'simple-default-title-product',
-        );
+        $result = $this->makeExporter()->export();
 
-        $this->assertStringNotContainsString('<variants>', $section);
-        $this->assertStringContainsString('<quantity>0</quantity>', $section);
-        $this->assertStringContainsString('<delivery_text><![CDATA[5-10 d.d.]]></delivery_text>', $section);
+        $this->assertSame(0, $result->exportedVariants);
+        $this->assertStringNotContainsString('<product>', Storage::disk('public')->get('feeds/varle.xml'));
+        $this->assertStringNotContainsString('<quantity>0</quantity>', Storage::disk('public')->get('feeds/varle.xml'));
     }
 
     public function test_simple_product_out_of_stock_without_backorder_is_skipped(): void

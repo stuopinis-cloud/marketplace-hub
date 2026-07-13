@@ -95,12 +95,12 @@ class VarleProductValidator
         $variant->loadMissing('inventoryLevels', 'supplierProducts.supplier');
         $availability = $this->availabilityResolver->resolve($variant, $deliveryRule);
 
-        if ($variant->inventoryLevels->isEmpty() && $availability['supplier_quantity'] <= 0 && ! $variant->backorder_allowed) {
+        if ($variant->inventoryLevels->isEmpty() && (int) $availability['quantity'] <= 0) {
             $errors[] = 'Inventory quantity record is required.';
         }
 
-        if (! ($channelConfig['export_zero_stock'] ?? true) && $availability['quantity'] <= 0 && ! $availability['exportable']) {
-            $errors[] = 'Variant skipped because export_zero_stock is disabled and quantity is zero.';
+        if (! $availability['exportable'] || (int) $availability['quantity'] <= 0) {
+            $errors[] = 'Resolved quantity must be greater than 0.';
         }
 
         if ($errors !== []) {

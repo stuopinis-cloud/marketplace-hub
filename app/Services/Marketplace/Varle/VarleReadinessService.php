@@ -108,20 +108,20 @@ class VarleReadinessService
                 $skipReason = 'Price must be greater than 0.';
             }
 
-            if ($variant->inventoryLevels->isEmpty() && $availability['supplier_quantity'] <= 0 && ! $variant->backorder_allowed) {
+            if ($variant->inventoryLevels->isEmpty() && (int) $availability['quantity'] <= 0) {
                 $exportable = false;
                 $issueCode = 'no_exportable_variants';
                 $skipReason = 'Inventory quantity record is required.';
             }
 
-            if ($availability['is_stale'] && $availability['supplier_quantity'] > 0 && $availability['local_quantity'] <= 0) {
+            if ($availability['is_stale'] && ($availability['supplier_quantity'] ?? 0) > 0 && $availability['local_quantity'] <= 0) {
                 if (! in_array('supplier_stock_stale', $issueCodes, true)) {
                     $issueCodes[] = 'supplier_stock_stale';
                     $issueMessages[] = 'Supplier stock is stale.';
                 }
             }
 
-            if (! $availability['exportable']) {
+            if (! $availability['exportable'] || (int) $availability['quantity'] <= 0) {
                 $exportable = false;
                 $issueCode = $availability['issue_code'];
                 $skipReason = $availability['issue_message'];
@@ -178,6 +178,9 @@ class VarleReadinessService
                 'quantity' => $availability['quantity'],
                 'local_quantity' => $availability['local_quantity'],
                 'supplier_quantity' => $availability['supplier_quantity'],
+                'supplier_availability' => $availability['supplier_availability'],
+                'used_availability_fallback' => $availability['used_availability_fallback'],
+                'availability_fallback_quantity' => $availability['availability_fallback_quantity'],
                 'availability_source' => $availability['source_type'],
                 'resolved_quantity' => $availability['quantity'],
                 'resolved_delivery_text' => $availability['delivery_text'],

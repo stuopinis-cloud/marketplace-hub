@@ -35,6 +35,10 @@ class SupplierSyncCommandTest extends TestCase
         $this->assertNotNull($supplier);
         $this->assertSame('Helikon / Direct-Action', $supplier->name);
         $this->assertSame('https://api.entirem.com/api/v1/stocks', $supplier->endpoint_url);
+        $this->assertSame([
+            'Items' => [],
+            'Categories' => [],
+        ], $supplier->config['request_body'] ?? null);
         $this->assertSame(Supplier::CONNECTOR_API, $supplier->connector_type);
         $this->assertTrue($supplier->sync_enabled);
         $this->assertSame(720, $supplier->sync_interval_minutes);

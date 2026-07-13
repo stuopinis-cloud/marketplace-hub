@@ -68,6 +68,10 @@ class SupplierResource extends Resource
             TextInput::make('in_stock_delivery_text')->default('5-10 d.d.'),
             TextInput::make('backorder_delivery_text'),
             Toggle::make('allow_backorder_export')->default(false),
+            TextInput::make('availability_fallback_quantity')
+                ->numeric()
+                ->default(5)
+                ->helperText('Quantity used only when supplier reports positive boolean/text availability but no numeric stock quantity. Explicit numeric zero remains unavailable by default.'),
             Toggle::make('sync_enabled')->default(false),
             TextInput::make('sync_interval_minutes')->numeric(),
             TextInput::make('stale_after_minutes')->numeric(),

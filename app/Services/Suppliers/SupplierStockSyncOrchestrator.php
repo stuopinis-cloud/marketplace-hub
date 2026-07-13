@@ -16,7 +16,7 @@ class SupplierStockSyncOrchestrator
      * @param  array<int, string>  $vendorScope
      * @param  array<int, array{
      *     sku: string,
-     *     stock_quantity: int,
+     *     stock_quantity: ?int,
      *     availability_status: string,
      *     raw_payload: array<string, mixed>
      * }>  $entries
@@ -92,7 +92,7 @@ class SupplierStockSyncOrchestrator
                     $stats['missing_quantity']++;
                 }
 
-                if ($entry['stock_quantity'] > 0) {
+                if (($entry['stock_quantity'] ?? 0) > 0) {
                     $stats['positive_stock']++;
                 } else {
                     $stats['zero_stock']++;
@@ -187,7 +187,7 @@ class SupplierStockSyncOrchestrator
     /**
      * @param  array{
      *     sku: string,
-     *     stock_quantity: int,
+     *     stock_quantity: ?int,
      *     availability_status: string,
      *     raw_payload: array<string, mixed>
      * }  $entry

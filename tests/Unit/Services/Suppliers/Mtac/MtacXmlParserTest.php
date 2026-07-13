@@ -44,9 +44,29 @@ class MtacXmlParserTest extends TestCase
                 ['sku' => 'SKU-'.$value, 'stock' => null, 'availability' => $value],
             ]));
 
-            $this->assertSame(1, $entries[0]['stock_quantity'], $value);
+            $this->assertNull($entries[0]['stock_quantity'], $value);
             $this->assertSame('available', $entries[0]['availability_status'], $value);
         }
+    }
+
+    public function test_missing_stock_with_in_stock_text_uses_null_numeric_quantity(): void
+    {
+        $entries = $this->parser->parse($this->sampleFeed([
+            ['sku' => 'SKU-in-stock', 'stock' => null, 'availability' => 'in stock'],
+        ]));
+
+        $this->assertNull($entries[0]['stock_quantity']);
+        $this->assertSame('available', $entries[0]['availability_status']);
+    }
+
+    public function test_explicit_zero_stock_does_not_use_availability_fallback(): void
+    {
+        $entries = $this->parser->parse($this->sampleFeed([
+            ['sku' => 'ZERO-1', 'stock' => '0', 'availability' => 'in stock'],
+        ]));
+
+        $this->assertSame(0, $entries[0]['stock_quantity']);
+        $this->assertSame('unavailable', $entries[0]['availability_status']);
     }
 
     public function test_missing_stock_uses_availability_false_values(): void

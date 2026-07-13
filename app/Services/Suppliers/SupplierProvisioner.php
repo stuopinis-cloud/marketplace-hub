@@ -29,6 +29,7 @@ class SupplierProvisioner
             'in_stock_delivery_text' => '5-10 d.d.',
             'backorder_delivery_text' => null,
             'allow_backorder_export' => false,
+            'availability_fallback_quantity' => 5,
             'sync_enabled' => true,
             'sync_interval_minutes' => 1440,
             'stale_after_minutes' => 1800,
@@ -47,12 +48,16 @@ class SupplierProvisioner
             'in_stock_delivery_text' => '5-10 d.d.',
             'backorder_delivery_text' => null,
             'allow_backorder_export' => false,
+            'availability_fallback_quantity' => 5,
             'sync_enabled' => true,
             'sync_interval_minutes' => 720,
             'stale_after_minutes' => 1800,
             'config' => [
                 'response_data_path' => 'Value',
-                'request_body' => [],
+                'request_body' => [
+                    'Items' => [],
+                    'Categories' => [],
+                ],
             ],
         ]);
     }

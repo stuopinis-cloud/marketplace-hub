@@ -50,7 +50,7 @@ class VarleDeliveryAndStockTest extends TestCase
         $this->assertStringContainsString('<delivery_text><![CDATA[2-4 d.d.]]></delivery_text>', $xml);
     }
 
-    public function test_backorder_variant_exports_when_allowed_and_uses_backorder_delivery_text(): void
+    public function test_backorder_variant_is_not_exported_with_zero_quantity(): void
     {
         VendorDeliveryRule::query()->create([
             'vendor' => 'Vendor Name',
@@ -67,11 +67,11 @@ class VarleDeliveryAndStockTest extends TestCase
         ]);
         $variant->inventoryLevels()->update(['quantity' => 0]);
 
-        $this->makeExporter()->export();
+        $result = $this->makeExporter()->export();
         $xml = \Illuminate\Support\Facades\Storage::disk('public')->get('feeds/varle.xml');
 
-        $this->assertStringContainsString('<delivery_text><![CDATA[5-10 d.d.]]></delivery_text>', $xml);
-        $this->assertDoesNotMatchRegularExpression('/<variant[^>]*>[\s\S]*?<delivery_text>/', $xml);
+        $this->assertSame(0, $result->exportedVariants);
+        $this->assertStringNotContainsString('<quantity>0</quantity>', $xml);
     }
 
     public function test_out_of_stock_deny_variant_is_skipped(): void

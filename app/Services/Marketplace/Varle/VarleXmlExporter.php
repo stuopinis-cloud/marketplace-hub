@@ -364,13 +364,13 @@ class VarleXmlExporter
 
             $availability = $this->availabilityResolver->resolve($variant, $deliveryRule);
 
-            if (! $availability['exportable']) {
+            if (! $availability['exportable'] || (int) $availability['quantity'] <= 0) {
                 $this->recordSkippedVariant(
                     $syncJob,
                     $variant,
-                    (string) ($availability['issue_message'] ?? 'Variant is not exportable.'),
+                    (string) ($availability['issue_message'] ?? 'Variant is not exportable because resolved quantity is zero.'),
                     [],
-                    (string) ($availability['issue_code'] ?? 'out_of_stock_no_backorder'),
+                    (string) ($availability['issue_code'] ?? 'no_stock_anywhere'),
                     $product,
                     $config,
                     $deliveryRule,
@@ -583,7 +583,9 @@ class VarleXmlExporter
         }
 
         if (! ($product['is_multi_variant'] ?? false)) {
-            $this->appendTextElement($document, $productElement, 'quantity', (string) $product['quantity']);
+            if ($this->isExportableQuantity($product['quantity'] ?? 0)) {
+                $this->appendTextElement($document, $productElement, 'quantity', (string) $product['quantity']);
+            }
         }
 
         $this->appendTextElement($document, $productElement, 'barcode_format', (string) $product['barcode_format']);
@@ -604,7 +606,11 @@ class VarleXmlExporter
                 $variantsElement->appendChild($variantElement);
 
                 $this->appendTextElement($document, $variantElement, 'title', (string) $variantPayload['title']);
-                $this->appendTextElement($document, $variantElement, 'quantity', (string) $variantPayload['quantity']);
+
+                if ($this->isExportableQuantity($variantPayload['quantity'] ?? 0)) {
+                    $this->appendTextElement($document, $variantElement, 'quantity', (string) $variantPayload['quantity']);
+                }
+
                 $this->appendTextElement($document, $variantElement, 'barcode', (string) $variantPayload['barcode']);
                 $this->appendTextElement($document, $variantElement, 'price', (string) $variantPayload['price']);
             }
@@ -764,6 +770,11 @@ class VarleXmlExporter
         $filename = (string) ($config['feed_filename'] ?? 'varle.xml');
 
         return 'feeds/'.$filename;
+    }
+
+    private function isExportableQuantity(mixed $quantity): bool
+    {
+        return (int) $quantity > 0;
     }
 
     private function appendTextElement(DOMDocument $document, DOMElement $parent, string $name, string $value): void
@@ -1313,9 +1324,9 @@ class VarleXmlExporter
 
             $availability = $this->availabilityResolver->resolve($variant, $deliveryRule);
 
-            if (! $availability['exportable']) {
+            if (! $availability['exportable'] || (int) $availability['quantity'] <= 0) {
                 $this->previewSkippedVariants++;
-                $this->recordPreviewSkip((string) ($availability['issue_message'] ?? 'Variant is not exportable.'));
+                $this->recordPreviewSkip((string) ($availability['issue_message'] ?? 'Variant is not exportable because resolved quantity is zero.'));
 
                 continue;
             }

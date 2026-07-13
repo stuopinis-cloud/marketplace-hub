@@ -2,6 +2,7 @@
 
 namespace App\Services\Suppliers\Mtac;
 
+use App\Services\Suppliers\SupplierAvailabilityEvaluator;
 use DOMDocument;
 use DOMNode;
 use DOMXPath;
@@ -9,18 +10,14 @@ use RuntimeException;
 
 class MtacXmlParser
 {
-    private const array TRUE_AVAILABILITY = [
-        'yes', 'true', 'in_stock', 'available', 'yra', 'sandelyje',
-    ];
-
-    private const array FALSE_AVAILABILITY = [
-        'no', 'false', 'out_of_stock', 'unavailable', 'nėra', 'nera',
-    ];
+    public function __construct(
+        private readonly SupplierAvailabilityEvaluator $availabilityEvaluator = new SupplierAvailabilityEvaluator,
+    ) {}
 
     /**
      * @return array<int, array{
      *     sku: string,
-     *     stock_quantity: int,
+     *     stock_quantity: ?int,
      *     availability_status: string,
      *     raw_payload: array<string, mixed>
      * }>
@@ -120,7 +117,7 @@ class MtacXmlParser
     }
 
     /**
-     * @return array{0: int, 1: string}
+     * @return array{0: ?int, 1: string}
      */
     public function resolveStock(?string $stockRaw, ?string $availabilityRaw): array
     {
@@ -136,7 +133,7 @@ class MtacXmlParser
         }
 
         if ($this->isTruthyAvailability($availabilityRaw)) {
-            return [1, 'available'];
+            return [null, 'available'];
         }
 
         return [0, 'unavailable'];
@@ -144,21 +141,7 @@ class MtacXmlParser
 
     public function isTruthyAvailability(?string $value): bool
     {
-        $normalized = mb_strtolower(trim((string) $value));
-
-        if ($normalized === '') {
-            return false;
-        }
-
-        if (in_array($normalized, self::TRUE_AVAILABILITY, true)) {
-            return true;
-        }
-
-        if (in_array($normalized, self::FALSE_AVAILABILITY, true)) {
-            return false;
-        }
-
-        return false;
+        return $this->availabilityEvaluator->isTruthy($value);
     }
 
     private function normalizeWhitespace(?string $value): ?string
