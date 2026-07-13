@@ -9,6 +9,8 @@ class ShopifyImportJobGuard
 {
     public function __construct(
         private readonly SyncJobProcessInspector $processInspector,
+        private readonly SyncJobHealthService $healthService,
+        private readonly StuckSyncJobMarker $stuckSyncJobMarker,
     ) {}
 
     public function findBlockingRunningImport(): ?SyncJob
@@ -20,7 +22,9 @@ class ShopifyImportJobGuard
             ->orderByDesc('id')
             ->get()
             ->first(function (SyncJob $job): bool {
-                if ($this->processInspector->isStale($job)) {
+                $health = $this->healthService->assess($job);
+
+                if ($health['health_status'] !== SyncJobHealthService::HEALTH_HEALTHY_RUNNING) {
                     return false;
                 }
 
@@ -30,33 +34,7 @@ class ShopifyImportJobGuard
 
     public function markStaleRunningImportsAsFailed(): int
     {
-        $marked = 0;
-
-        SyncJob::query()
-            ->where('type', 'import')
-            ->where('source', 'shopify')
-            ->where('status', SyncJobStatus::Running)
-            ->orderBy('id')
-            ->each(function (SyncJob $job) use (&$marked): void {
-                if (! $this->processInspector->shouldMarkStuck($job)) {
-                    return;
-                }
-
-                $job->update([
-                    'status' => SyncJobStatus::Failed,
-                    'finished_at' => now(),
-                    'error_message' => 'Import marked failed because the worker stopped responding.',
-                    'context' => array_merge($job->context ?? [], [
-                        'stale_detected_at' => now()->toIso8601String(),
-                        'last_activity_at' => $this->processInspector->lastActivityAt($job)?->toIso8601String(),
-                        'process_id' => $job->process_id,
-                    ]),
-                ]);
-
-                $marked++;
-            });
-
-        return $marked;
+        return $this->stuckSyncJobMarker->markStuckJobs('shopify');
     }
 
     public function requestCancelRunningImports(): int
@@ -73,30 +51,6 @@ class ShopifyImportJobGuard
 
     public function detectAndMarkStuckJobs(): int
     {
-        $marked = 0;
-
-        SyncJob::query()
-            ->where('status', SyncJobStatus::Running)
-            ->orderBy('id')
-            ->each(function (SyncJob $job) use (&$marked): void {
-                if (! $this->processInspector->shouldMarkStuck($job)) {
-                    return;
-                }
-
-                $job->update([
-                    'status' => SyncJobStatus::Failed,
-                    'finished_at' => now(),
-                    'error_message' => 'Marked stuck by sync:detect-stuck.',
-                    'context' => array_merge($job->context ?? [], [
-                        'stale_detected_at' => now()->toIso8601String(),
-                        'last_activity_at' => $this->processInspector->lastActivityAt($job)?->toIso8601String(),
-                        'process_id' => $job->process_id,
-                    ]),
-                ]);
-
-                $marked++;
-            });
-
-        return $marked;
+        return $this->stuckSyncJobMarker->markStuckJobs();
     }
 }

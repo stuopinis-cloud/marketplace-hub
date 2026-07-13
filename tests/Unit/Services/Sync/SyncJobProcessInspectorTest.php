@@ -23,7 +23,7 @@ class SyncJobProcessInspectorTest extends TestCase
             'process_id' => 9_999_999,
         ]);
 
-        $inspector = new SyncJobProcessInspector;
+        $inspector = app(SyncJobProcessInspector::class);
 
         $this->assertTrue($inspector->shouldMarkStuck($job));
     }
@@ -39,7 +39,7 @@ class SyncJobProcessInspectorTest extends TestCase
             'process_id' => 9_999_999,
         ]);
 
-        $inspector = new SyncJobProcessInspector;
+        $inspector = app(SyncJobProcessInspector::class);
 
         $this->assertFalse($inspector->shouldMarkStuck($job));
     }

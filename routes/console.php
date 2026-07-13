@@ -11,3 +11,7 @@ Artisan::command('inspire', function () {
 Schedule::command('marketplace:run-due-schedules')
     ->everyMinute()
     ->withoutOverlapping();
+
+Schedule::command('sync:detect-stuck')
+    ->everyFiveMinutes()
+    ->withoutOverlapping();

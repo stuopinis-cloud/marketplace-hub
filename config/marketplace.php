@@ -19,4 +19,8 @@ return [
         ],
     ],
 
+    'sync' => [
+        'stuck_after_minutes' => (int) env('SYNC_STUCK_AFTER_MINUTES', 10),
+    ],
+
 ];

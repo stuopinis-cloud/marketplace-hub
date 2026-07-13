@@ -7,7 +7,9 @@ use Carbon\CarbonInterface;
 
 class SyncJobProcessInspector
 {
-    public const int STALE_MINUTES = 15;
+    public function __construct(
+        private readonly SyncJobHealthService $healthService,
+    ) {}
 
     public function isProcessRunning(?int $processId): bool
     {
@@ -24,14 +26,18 @@ class SyncJobProcessInspector
 
     public function isStale(SyncJob $job, ?int $staleMinutes = null): bool
     {
-        $staleMinutes ??= self::STALE_MINUTES;
-        $lastActivity = $job->heartbeat_at ?? $job->updated_at ?? $job->started_at;
+        if ($staleMinutes !== null) {
+            $threshold = now()->subMinutes($staleMinutes);
+            $lastActivity = $this->lastActivityAt($job);
 
-        if ($lastActivity === null) {
-            return true;
+            if ($lastActivity === null) {
+                return true;
+            }
+
+            return $lastActivity->lte($threshold);
         }
 
-        return $lastActivity->lte(now()->subMinutes($staleMinutes));
+        return $this->healthService->isStuck($job);
     }
 
     public function shouldMarkStuck(SyncJob $job, ?int $staleMinutes = null): bool
@@ -40,15 +46,15 @@ class SyncJobProcessInspector
             return false;
         }
 
-        if (! $this->isStale($job, $staleMinutes)) {
-            return false;
+        if ($staleMinutes !== null) {
+            return $this->isStale($job, $staleMinutes);
         }
 
-        return ! $this->isProcessRunning($job->process_id);
+        return $this->healthService->isStuck($job);
     }
 
     public function lastActivityAt(SyncJob $job): ?CarbonInterface
     {
-        return $job->heartbeat_at ?? $job->updated_at ?? $job->started_at;
+        return $this->healthService->lastActivityAt($job);
     }
 }

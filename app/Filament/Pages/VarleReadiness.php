@@ -2,7 +2,8 @@
 
 namespace App\Filament\Pages;
 
-use App\Filament\Pages\VarleReadiness\Widgets\LatestShopifyImportWidget;
+use App\Filament\Widgets\ShopifyImportHistoryWidget;
+use App\Filament\Widgets\ShopifyImportStatusWidget;
 use App\Filament\Pages\VarleReadiness\Widgets\LatestVarleExportWidget;
 use App\Filament\Pages\VarleReadiness\Widgets\VarleDataQualityStatsWidget;
 use App\Filament\Pages\VarleReadiness\Widgets\VarleExportApprovalStatsWidget;
@@ -109,7 +110,7 @@ class VarleReadiness extends Page
     protected function getHeaderWidgets(): array
     {
         return [
-            LatestShopifyImportWidget::class,
+            ShopifyImportStatusWidget::class,
             LatestVarleExportWidget::class,
         ];
     }
@@ -117,6 +118,7 @@ class VarleReadiness extends Page
     protected function getFooterWidgets(): array
     {
         return [
+            ShopifyImportHistoryWidget::class,
             VarleReadinessSummaryWidget::class,
             VarleExportApprovalStatsWidget::class,
             VarleDataQualityStatsWidget::class,

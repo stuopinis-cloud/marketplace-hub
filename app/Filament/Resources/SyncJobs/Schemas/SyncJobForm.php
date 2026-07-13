@@ -4,6 +4,7 @@ namespace App\Filament\Resources\SyncJobs\Schemas;
 
 use App\Enums\SyncJobStatus;
 use App\Models\SyncJob;
+use App\Services\Sync\SyncJobHealthService;
 use Filament\Forms\Components\DateTimePicker;
 use Filament\Forms\Components\KeyValue;
 use Filament\Forms\Components\Placeholder;
@@ -54,6 +55,35 @@ class SyncJobForm
                 DateTimePicker::make('cancelled_at')
                     ->disabled()
                     ->dehydrated(false),
+                Placeholder::make('health_status')
+                    ->label('Health status')
+                    ->content(function (?SyncJob $record): string {
+                        if ($record === null) {
+                            return '—';
+                        }
+
+                        $health = app(SyncJobHealthService::class)->assess($record);
+
+                        return $health['label'].' ('.$health['health_status'].')';
+                    }),
+                Placeholder::make('health_message')
+                    ->label('Health message')
+                    ->content(function (?SyncJob $record): string {
+                        if ($record === null) {
+                            return '—';
+                        }
+
+                        return app(SyncJobHealthService::class)->assess($record)['human_message'];
+                    }),
+                Placeholder::make('progress_label')
+                    ->label('Progress')
+                    ->content(function (?SyncJob $record): string {
+                        if ($record === null) {
+                            return '—';
+                        }
+
+                        return app(SyncJobHealthService::class)->assess($record)['progress_label'];
+                    }),
                 Placeholder::make('current_product_handle')
                     ->label('Current product handle')
                     ->content(fn (?SyncJob $record): string => (string) data_get($record?->context, 'current_product_handle', '—')),

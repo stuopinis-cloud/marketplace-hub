@@ -2,18 +2,18 @@
 
 namespace App\Console\Commands;
 
-use App\Services\Sync\ShopifyImportJobGuard;
+use App\Services\Sync\StuckSyncJobMarker;
 use Illuminate\Console\Command;
 
 class DetectStuckSyncJobsCommand extends Command
 {
     protected $signature = 'sync:detect-stuck';
 
-    protected $description = 'Mark running sync jobs as failed when heartbeat is stale and no worker process exists';
+    protected $description = 'Mark running sync jobs as failed when heartbeat is stale';
 
-    public function handle(ShopifyImportJobGuard $guard): int
+    public function handle(StuckSyncJobMarker $marker): int
     {
-        $marked = $guard->detectAndMarkStuckJobs();
+        $marked = $marker->markStuckJobs();
 
         if ($marked === 0) {
             $this->components->info('No stuck running sync jobs detected.');
