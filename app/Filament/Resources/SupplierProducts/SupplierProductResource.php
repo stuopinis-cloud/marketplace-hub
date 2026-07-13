@@ -49,11 +49,14 @@ class SupplierProductResource extends Resource
         return $table
             ->columns([
                 TextColumn::make('supplier.name')->label('Supplier')->sortable()->searchable(),
+                TextColumn::make('supplier.connector_type')->label('Source type')->toggleable(),
                 TextColumn::make('supplier_sku')->searchable()->sortable(),
+                TextColumn::make('raw_payload.barcode')->label('Barcode')->toggleable(),
                 TextColumn::make('productVariant.product.title')->label('Product')->toggleable(),
                 TextColumn::make('productVariant.sku')->label('Shopify SKU')->searchable(),
                 TextColumn::make('productVariant.product.vendor')->label('Vendor')->toggleable(),
                 TextColumn::make('stock_quantity')->sortable(),
+                TextColumn::make('availability_status')->label('Availability')->badge()->toggleable(),
                 TextColumn::make('match_status')->badge(),
                 TextColumn::make('match_method')->toggleable(),
                 TextColumn::make('last_synced_at')->dateTime()->sortable(),

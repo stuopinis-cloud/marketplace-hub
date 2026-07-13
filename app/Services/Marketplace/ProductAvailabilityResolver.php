@@ -119,6 +119,43 @@ class ProductAvailabilityResolver
             );
         }
 
+        if ($this->variantAllowsBackorder($variant) && ($deliveryRule['allow_backorder_export'] ?? true)) {
+            return $this->buildResult(
+                exportable: true,
+                sourceType: self::SOURCE_BACKORDER,
+                quantity: 1,
+                stockStatus: 'backorder',
+                deliveryClass: VarleStockEvaluator::CLASS_BACKORDER,
+                deliveryText: $deliveryRule['backorder_delivery_text'] ?? null,
+                localQuantity: $localQuantity,
+                supplierQuantity: $supplierSelection['numeric_quantity'],
+                supplierAvailability: $supplierSelection['availability_status'],
+                supplierName: $supplierSelection['supplier_name'],
+                isStale: $isStale,
+                supplierMatchStatus: $supplierSelection['match_status'],
+            );
+        }
+
+        if ($this->variantAllowsBackorder($variant) && ! ($deliveryRule['allow_backorder_export'] ?? true)) {
+            return $this->buildResult(
+                exportable: false,
+                sourceType: null,
+                quantity: 0,
+                stockStatus: 'unavailable',
+                deliveryClass: VarleStockEvaluator::CLASS_BLOCKED,
+                deliveryText: null,
+                localQuantity: $localQuantity,
+                supplierQuantity: $supplierSelection['numeric_quantity'],
+                supplierAvailability: $supplierSelection['availability_status'],
+                supplierName: $supplierSelection['supplier_name'],
+                isStale: $isStale,
+                supplierMatchStatus: $supplierSelection['match_status'],
+                reason: 'Backorder export is disabled for this vendor.',
+                issueCode: 'backorder_disabled_for_vendor',
+                issueMessage: 'Backorder export is disabled for this vendor.',
+            );
+        }
+
         if ($isStale && $supplierSelection['raw_supplier_quantity'] > 0) {
             return $this->buildResult(
                 exportable: false,
@@ -179,26 +216,6 @@ class ProductAvailabilityResolver
                 reason: 'Supplier availability is unknown.',
                 issueCode: 'supplier_availability_unknown',
                 issueMessage: 'Supplier availability is unknown.',
-            );
-        }
-
-        if ($variant->backorder_allowed && ! ($deliveryRule['allow_backorder_export'] ?? true)) {
-            return $this->buildResult(
-                exportable: false,
-                sourceType: null,
-                quantity: 0,
-                stockStatus: 'unavailable',
-                deliveryClass: VarleStockEvaluator::CLASS_BLOCKED,
-                deliveryText: null,
-                localQuantity: $localQuantity,
-                supplierQuantity: $supplierSelection['numeric_quantity'],
-                supplierAvailability: $supplierSelection['availability_status'],
-                supplierName: $supplierSelection['supplier_name'],
-                isStale: $isStale,
-                supplierMatchStatus: $supplierSelection['match_status'],
-                reason: 'Backorder export is disabled for this vendor.',
-                issueCode: 'backorder_disabled_for_vendor',
-                issueMessage: 'Backorder export is disabled for this vendor.',
             );
         }
 
@@ -469,13 +486,24 @@ class ProductAvailabilityResolver
             'delivery_days_min' => match ($sourceType) {
                 self::SOURCE_SHOPIFY => 1,
                 self::SOURCE_SUPPLIER, self::SOURCE_SUPPLIER_AVAILABILITY_FALLBACK => 5,
+                self::SOURCE_BACKORDER => 5,
                 default => null,
             },
             'delivery_days_max' => match ($sourceType) {
                 self::SOURCE_SHOPIFY => 2,
                 self::SOURCE_SUPPLIER, self::SOURCE_SUPPLIER_AVAILABILITY_FALLBACK => 10,
+                self::SOURCE_BACKORDER => 10,
                 default => null,
             },
         ];
+    }
+
+    private function variantAllowsBackorder(ProductVariant $variant): bool
+    {
+        if ($variant->backorder_allowed) {
+            return true;
+        }
+
+        return mb_strtoupper(trim((string) ($variant->inventory_policy ?? ''))) === 'CONTINUE';
     }
 }

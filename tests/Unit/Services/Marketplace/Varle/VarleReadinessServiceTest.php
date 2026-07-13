@@ -83,6 +83,31 @@ class VarleReadinessServiceTest extends TestCase
         $this->assertNotEmpty($analysis['meaningful_options']);
     }
 
+    public function test_backorder_only_product_is_ready_without_supplier_stock(): void
+    {
+        $variant = VarleCatalogFixtures::createSimpleDefaultTitleProduct();
+        $variant->update([
+            'inventory_policy' => 'CONTINUE',
+            'backorder_allowed' => true,
+        ]);
+        $variant->inventoryLevels()->update(['quantity' => 0]);
+
+        \App\Models\VendorDeliveryRule::query()->create([
+            'vendor' => 'Vendor Name',
+            'enabled' => true,
+            'backorder_delivery_text' => '5-10 d.d.',
+            'allow_backorder_export' => true,
+        ]);
+
+        $service = $this->app->make(VarleReadinessService::class);
+        $analysis = $service->analyze($variant->product->fresh(['variants.inventoryLevels', 'variants.supplierProducts.supplier', 'images', 'sourceCategories']));
+
+        $this->assertGreaterThan(0, $analysis['exportable_variants_count']);
+        $this->assertSame('backorder', $analysis['variant_diagnostics'][0]['availability_source']);
+        $this->assertSame(1, $analysis['variant_diagnostics'][0]['resolved_quantity']);
+        $this->assertNotContains('no_stock_anywhere', $analysis['issue_codes']);
+    }
+
     public function test_local_zero_and_supplier_positive_can_still_be_ready(): void
     {
         $supplier = \App\Models\Supplier::query()->create([

@@ -29,6 +29,7 @@ class SupplierSkuMatcher
         string $supplierSku,
         Collection $shopifyVariants,
         Collection $existingMappings,
+        ?string $barcode = null,
     ): array {
         $normalizedSku = $this->normalizeSku($supplierSku);
 
@@ -48,6 +49,31 @@ class SupplierSkuMatcher
                 'match_method' => SupplierProduct::MATCH_METHOD_MANUAL,
                 'issue_code' => null,
             ];
+        }
+
+        if (filled($barcode)) {
+            $normalizedBarcode = $this->normalizeSku($barcode);
+            $barcodeMatches = $shopifyVariants
+                ->filter(fn (ProductVariant $variant): bool => $this->normalizeSku((string) $variant->barcode) === $normalizedBarcode)
+                ->values();
+
+            if ($barcodeMatches->count() > 1) {
+                return [
+                    'variant' => null,
+                    'match_status' => SupplierProduct::MATCH_STATUS_AMBIGUOUS,
+                    'match_method' => null,
+                    'issue_code' => 'duplicate_shopify_sku',
+                ];
+            }
+
+            if ($barcodeMatches->count() === 1) {
+                return [
+                    'variant' => $barcodeMatches->first(),
+                    'match_status' => SupplierProduct::MATCH_STATUS_MATCHED,
+                    'match_method' => SupplierProduct::MATCH_METHOD_BARCODE,
+                    'issue_code' => null,
+                ];
+            }
         }
 
         $matches = $shopifyVariants

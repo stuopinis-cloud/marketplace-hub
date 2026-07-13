@@ -310,6 +310,8 @@ class VarleReadinessMetrics
             'no_images',
             'price_invalid',
             'out_of_stock_no_backorder',
+            'no_stock_anywhere',
+            'supplier_stock_stale',
             'no_exportable_variants',
             'missing_delivery_rule',
             'vendor_disabled_for_varle',

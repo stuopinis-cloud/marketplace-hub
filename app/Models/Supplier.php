@@ -15,9 +15,15 @@ class Supplier extends Model
 
     public const string CONNECTOR_API = 'api';
 
+    public const string CONNECTOR_CSV_URL = 'csv_url';
+
+    public const string CONNECTOR_CSV_UPLOAD = 'csv_upload';
+
     public const string AUTH_NONE = 'none';
 
     public const string AUTH_BEARER_TOKEN = 'bearer_token';
+
+    public const string AUTH_BASIC = 'basic_auth';
 
     protected $fillable = [
         'name',

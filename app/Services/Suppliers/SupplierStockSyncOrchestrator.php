@@ -66,7 +66,12 @@ class SupplierStockSyncOrchestrator
                     continue;
                 }
 
-                $match = $skuMatcher->match($entry['sku'], $shopifyVariants, $existingMappings);
+                $match = $skuMatcher->match(
+                    $entry['sku'],
+                    $shopifyVariants,
+                    $existingMappings,
+                    isset($entry['raw_payload']['barcode']) ? (string) $entry['raw_payload']['barcode'] : null,
+                );
 
                 if ($match['issue_code'] === 'duplicate_shopify_sku') {
                     $stats['ambiguous']++;
@@ -98,6 +103,11 @@ class SupplierStockSyncOrchestrator
                     $stats['zero_stock']++;
                 }
 
+                if (($entry['stock_quantity'] ?? null) === null
+                    && ($entry['availability_status'] ?? null) === SupplierProduct::AVAILABILITY_AVAILABLE) {
+                    $stats['availability_fallback_candidates']++;
+                }
+
                 if (! $options->dryRun) {
                     $supplierProduct = $this->upsertSupplierProduct($supplier, $entry, $match);
                     $seenSupplierProductIds[] = $supplierProduct->id;
@@ -107,7 +117,11 @@ class SupplierStockSyncOrchestrator
             }
 
             if (! $options->dryRun && ! $options->isPartialRun()) {
-                $stats['missing_from_feed'] = $this->markMissingFromFeed($supplier, $seenSupplierProductIds);
+                $policy = (string) data_get($supplier->config, 'missing_from_feed_policy', 'mark_unavailable');
+
+                if ($policy !== 'ignore') {
+                    $stats['missing_from_feed'] = $this->markMissingFromFeed($supplier, $seenSupplierProductIds);
+                }
             }
 
             $this->finishSyncJob($syncJob, $supplier, $stats, $options->dryRun);
@@ -159,6 +173,7 @@ class SupplierStockSyncOrchestrator
             'missing_from_feed' => 0,
             'missing_sku' => 0,
             'missing_quantity' => 0,
+            'availability_fallback_candidates' => 0,
         ];
     }
 

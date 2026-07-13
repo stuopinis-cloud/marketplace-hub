@@ -3,7 +3,7 @@
 namespace App\Filament\Resources\Products\Pages;
 
 use App\Filament\Resources\Products\ProductResource;
-use App\Filament\Resources\Products\Widgets\ProductDataQualityStats;
+use App\Filament\Resources\Products\Widgets\ProductVarleReadinessStats;
 use Filament\Actions\CreateAction;
 use Filament\Resources\Pages\ListRecords;
 
@@ -21,7 +21,7 @@ class ListProducts extends ListRecords
     protected function getHeaderWidgets(): array
     {
         return [
-            ProductDataQualityStats::class,
+            ProductVarleReadinessStats::class,
         ];
     }
 }

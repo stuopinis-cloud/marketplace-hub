@@ -205,9 +205,12 @@ class ProductAvailabilityResolverTest extends TestCase
         $this->assertSame('supplier_availability_unknown', $resolved['issue_code']);
     }
 
-    public function test_backorder_is_not_exportable_for_varle(): void
+    public function test_backorder_allowed_without_supplier_exports_quantity_one(): void
     {
-        $variant = $this->makeVariant(['backorder_allowed' => true]);
+        $variant = $this->makeVariant([
+            'backorder_allowed' => true,
+            'inventory_policy' => 'CONTINUE',
+        ]);
 
         InventoryLevel::query()->create([
             'variant_id' => $variant->id,
@@ -215,11 +218,95 @@ class ProductAvailabilityResolverTest extends TestCase
             'quantity' => 0,
         ]);
 
-        $resolved = app(ProductAvailabilityResolver::class)->resolve($variant->fresh());
+        $resolved = app(ProductAvailabilityResolver::class)->resolve($variant->fresh(), [
+            'allow_backorder_export' => true,
+            'backorder_delivery_text' => '5-10 d.d.',
+        ]);
+
+        $this->assertTrue($resolved['exportable']);
+        $this->assertSame('backorder', $resolved['source_type']);
+        $this->assertSame(1, $resolved['quantity']);
+        $this->assertSame('5-10 d.d.', $resolved['delivery_text']);
+    }
+
+    public function test_inventory_policy_continue_exports_backorder_quantity_one(): void
+    {
+        $variant = $this->makeVariant([
+            'backorder_allowed' => false,
+            'inventory_policy' => 'CONTINUE',
+        ]);
+
+        $resolved = app(ProductAvailabilityResolver::class)->resolve($variant->fresh(), [
+            'allow_backorder_export' => true,
+            'backorder_delivery_text' => '10-20 d.d.',
+        ]);
+
+        $this->assertTrue($resolved['exportable']);
+        $this->assertSame('backorder', $resolved['source_type']);
+        $this->assertSame(1, $resolved['quantity']);
+    }
+
+    public function test_supplier_positive_stock_wins_over_backorder(): void
+    {
+        $variant = $this->makeVariant(['backorder_allowed' => true]);
+        $supplier = $this->makeSupplier();
+
+        SupplierProduct::query()->create([
+            'supplier_id' => $supplier->id,
+            'product_variant_id' => $variant->id,
+            'supplier_sku' => 'SKU-1',
+            'stock_quantity' => 6,
+            'match_status' => SupplierProduct::MATCH_STATUS_MATCHED,
+            'match_method' => SupplierProduct::MATCH_METHOD_SKU,
+            'availability_status' => SupplierProduct::AVAILABILITY_AVAILABLE,
+            'enabled' => true,
+            'last_synced_at' => now(),
+        ]);
+
+        $resolved = app(ProductAvailabilityResolver::class)->resolve($variant->fresh(), [
+            'allow_backorder_export' => true,
+        ]);
+
+        $this->assertSame('supplier', $resolved['source_type']);
+        $this->assertSame(6, $resolved['quantity']);
+    }
+
+    public function test_supplier_availability_fallback_wins_over_backorder(): void
+    {
+        $variant = $this->makeVariant(['backorder_allowed' => true]);
+        $supplier = $this->makeSupplier();
+
+        SupplierProduct::query()->create([
+            'supplier_id' => $supplier->id,
+            'product_variant_id' => $variant->id,
+            'supplier_sku' => 'SKU-1',
+            'stock_quantity' => null,
+            'availability_status' => SupplierProduct::AVAILABILITY_AVAILABLE,
+            'raw_payload' => ['availability' => 'yes'],
+            'match_status' => SupplierProduct::MATCH_STATUS_MATCHED,
+            'match_method' => SupplierProduct::MATCH_METHOD_SKU,
+            'enabled' => true,
+            'last_synced_at' => now(),
+        ]);
+
+        $resolved = app(ProductAvailabilityResolver::class)->resolve($variant->fresh(), [
+            'allow_backorder_export' => true,
+        ]);
+
+        $this->assertSame('supplier_availability_fallback', $resolved['source_type']);
+        $this->assertSame(5, $resolved['quantity']);
+    }
+
+    public function test_vendor_backorder_disabled_blocks_backorder_export(): void
+    {
+        $variant = $this->makeVariant(['backorder_allowed' => true]);
+
+        $resolved = app(ProductAvailabilityResolver::class)->resolve($variant->fresh(), [
+            'allow_backorder_export' => false,
+        ]);
 
         $this->assertFalse($resolved['exportable']);
-        $this->assertSame(0, $resolved['quantity']);
-        $this->assertSame('no_stock_anywhere', $resolved['issue_code']);
+        $this->assertSame('backorder_disabled_for_vendor', $resolved['issue_code']);
     }
 
     public function test_stale_supplier_stock_is_ignored(): void

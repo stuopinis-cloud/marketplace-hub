@@ -94,8 +94,9 @@ class VarleProductValidator
 
         $variant->loadMissing('inventoryLevels', 'supplierProducts.supplier');
         $availability = $this->availabilityResolver->resolve($variant, $deliveryRule);
+        $isBackorderExport = ($availability['source_type'] ?? null) === ProductAvailabilityResolver::SOURCE_BACKORDER;
 
-        if ($variant->inventoryLevels->isEmpty() && (int) $availability['quantity'] <= 0) {
+        if ($variant->inventoryLevels->isEmpty() && ! $isBackorderExport && (int) $availability['quantity'] <= 0) {
             $errors[] = 'Inventory quantity record is required.';
         }
 

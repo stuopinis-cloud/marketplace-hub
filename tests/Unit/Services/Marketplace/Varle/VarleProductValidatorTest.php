@@ -70,6 +70,22 @@ class VarleProductValidatorTest extends TestCase
         $this->assertContains('No variant-specific images found', $result->errors);
     }
 
+    public function test_validator_accepts_valid_backorder_quantity_one(): void
+    {
+        $variant = VarleCatalogFixtures::createExportableVariant(variantOverrides: [
+            'backorder_allowed' => true,
+            'inventory_policy' => 'CONTINUE',
+        ]);
+        $variant->inventoryLevels()->update(['quantity' => 0]);
+
+        $result = $this->validator->validateVariant($variant->fresh(), $this->channelConfig(), [
+            'allow_backorder_export' => true,
+            'backorder_delivery_text' => '5-10 d.d.',
+        ]);
+
+        $this->assertTrue($result->isValid);
+    }
+
     public function test_validator_accepts_valid_variant(): void
     {
         $variant = VarleCatalogFixtures::createExportableVariant();

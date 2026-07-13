@@ -3,6 +3,7 @@
 namespace App\Services\Suppliers;
 
 use App\Models\Supplier;
+use App\Services\Suppliers\Csv\SupplierCsvSupplierImporter;
 use App\Services\Suppliers\Helik\HelikSupplierImporter;
 use App\Services\Suppliers\Mtac\MtacSupplierImporter;
 use InvalidArgumentException;
@@ -12,16 +13,52 @@ class SupplierSyncManager
     public function __construct(
         private readonly MtacSupplierImporter $mtacImporter,
         private readonly HelikSupplierImporter $helikImporter,
+        private readonly SupplierCsvSupplierImporter $csvImporter,
         private readonly SupplierProvisioner $supplierProvisioner,
     ) {}
 
     public function sync(string $supplierCode, ?SupplierSyncOptions $options = null): SupplierSyncResult
     {
-        return match (mb_strtolower($supplierCode)) {
-            Supplier::CODE_MTAC => $this->mtacImporter->sync($options),
-            Supplier::CODE_HELIK => $this->helikImporter->sync($options),
-            default => throw new InvalidArgumentException('Unsupported supplier code: '.$supplierCode),
+        $supplierCode = mb_strtolower($supplierCode);
+
+        if ($supplierCode === Supplier::CODE_MTAC) {
+            $this->supplierProvisioner->ensureMtacSupplier();
+        }
+
+        if ($supplierCode === Supplier::CODE_HELIK) {
+            $this->supplierProvisioner->ensureHelikSupplier();
+        }
+
+        $supplier = Supplier::query()->where('code', $supplierCode)->first();
+
+        if (! $supplier instanceof Supplier) {
+            throw new InvalidArgumentException('Unknown supplier code: '.$supplierCode);
+        }
+
+        return match ($supplier->connector_type) {
+            Supplier::CONNECTOR_XML_URL => $this->syncXmlUrlSupplier($supplier, $options),
+            Supplier::CONNECTOR_API => $this->syncApiSupplier($supplier, $options),
+            Supplier::CONNECTOR_CSV_URL, Supplier::CONNECTOR_CSV_UPLOAD => $this->csvImporter->sync($supplier, $options),
+            default => throw new InvalidArgumentException('Unsupported supplier connector type: '.$supplier->connector_type),
         };
+    }
+
+    private function syncXmlUrlSupplier(Supplier $supplier, ?SupplierSyncOptions $options): SupplierSyncResult
+    {
+        if ($supplier->code !== Supplier::CODE_MTAC) {
+            throw new InvalidArgumentException('Unsupported XML URL supplier: '.$supplier->code);
+        }
+
+        return $this->mtacImporter->sync($options);
+    }
+
+    private function syncApiSupplier(Supplier $supplier, ?SupplierSyncOptions $options): SupplierSyncResult
+    {
+        if ($supplier->code !== Supplier::CODE_HELIK) {
+            throw new InvalidArgumentException('Unsupported API supplier: '.$supplier->code);
+        }
+
+        return $this->helikImporter->sync($options);
     }
 
     /**

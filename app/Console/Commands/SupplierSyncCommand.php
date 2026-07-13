@@ -59,6 +59,15 @@ class SupplierSyncCommand extends Command
             $this->line('Missing quantity rows: '.$result->missingQuantity);
         }
 
+        if ($this->output->isVerbose()) {
+            $context = \App\Models\SyncJob::query()->find($result->syncJobId)?->context ?? [];
+            $fallbackCandidates = (int) data_get($context, 'stats.availability_fallback_candidates', 0);
+
+            if ($fallbackCandidates > 0) {
+                $this->line('Availability fallback candidates: '.$fallbackCandidates);
+            }
+        }
+
         $this->components->info('Supplier sync finished.');
 
         return self::SUCCESS;

@@ -23,4 +23,8 @@ return [
         'stuck_after_minutes' => (int) env('SYNC_STUCK_AFTER_MINUTES', 10),
     ],
 
+    'suppliers' => [
+        'csv_max_upload_kb' => (int) env('SUPPLIER_CSV_MAX_UPLOAD_KB', 10240),
+    ],
+
 ];
