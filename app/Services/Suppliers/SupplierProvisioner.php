@@ -34,4 +34,26 @@ class SupplierProvisioner
             'stale_after_minutes' => 1800,
         ]);
     }
+
+    public function ensureHelikSupplier(): Supplier
+    {
+        return $this->ensureSupplier(Supplier::CODE_HELIK, [
+            'name' => 'Helikon / Direct-Action',
+            'enabled' => true,
+            'connector_type' => Supplier::CONNECTOR_API,
+            'endpoint_url' => 'https://api.entirem.com/api/v1/stocks',
+            'auth_type' => Supplier::AUTH_BEARER_TOKEN,
+            'stock_priority' => 100,
+            'in_stock_delivery_text' => '5-10 d.d.',
+            'backorder_delivery_text' => null,
+            'allow_backorder_export' => false,
+            'sync_enabled' => true,
+            'sync_interval_minutes' => 720,
+            'stale_after_minutes' => 1800,
+            'config' => [
+                'response_data_path' => 'Value',
+                'request_body' => [],
+            ],
+        ]);
+    }
 }

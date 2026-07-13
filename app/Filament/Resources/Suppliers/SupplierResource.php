@@ -5,12 +5,14 @@ namespace App\Filament\Resources\Suppliers;
 use App\Filament\Resources\Suppliers\Pages\EditSupplier;
 use App\Filament\Resources\Suppliers\Pages\ListSuppliers;
 use App\Models\Supplier;
-use App\Services\Suppliers\Mtac\MtacFeedClient;
-use App\Services\Suppliers\Mtac\MtacSupplierSyncOptions;
+use App\Services\Suppliers\SupplierConnectionTester;
 use App\Services\Suppliers\SupplierSyncManager;
+use App\Services\Suppliers\SupplierSyncOptions;
 use BackedEnum;
 use Filament\Actions\Action;
 use Filament\Actions\EditAction;
+use Filament\Forms\Components\KeyValue;
+use Filament\Forms\Components\Select;
 use Filament\Forms\Components\TextInput;
 use Filament\Forms\Components\Toggle;
 use Filament\Notifications\Notification;
@@ -38,8 +40,30 @@ class SupplierResource extends Resource
             TextInput::make('name')->required(),
             TextInput::make('code')->required()->unique(ignoreRecord: true),
             Toggle::make('enabled')->default(true),
-            TextInput::make('connector_type'),
+            Select::make('connector_type')
+                ->options([
+                    Supplier::CONNECTOR_XML_URL => 'XML URL',
+                    Supplier::CONNECTOR_API => 'API',
+                ]),
             TextInput::make('endpoint_url')->columnSpanFull(),
+            Select::make('auth_type')
+                ->options([
+                    Supplier::AUTH_NONE => 'None',
+                    Supplier::AUTH_BEARER_TOKEN => 'Bearer token',
+                ]),
+            TextInput::make('credential_token')
+                ->label('API token')
+                ->password()
+                ->revealable()
+                ->dehydrated(fn (?string $state): bool => filled($state))
+                ->afterStateHydrated(function (TextInput $component, ?Supplier $record): void {
+                    if ($record === null) {
+                        return;
+                    }
+
+                    $component->state(filled(data_get($record->credentials, 'token')) ? '********' : null);
+                })
+                ->helperText('Stored encrypted. Leave blank to keep the existing token or use ENTIREM_API_TOKEN from the environment.'),
             TextInput::make('stock_priority')->numeric()->default(100),
             TextInput::make('in_stock_delivery_text')->default('5-10 d.d.'),
             TextInput::make('backorder_delivery_text'),
@@ -47,6 +71,9 @@ class SupplierResource extends Resource
             Toggle::make('sync_enabled')->default(false),
             TextInput::make('sync_interval_minutes')->numeric(),
             TextInput::make('stale_after_minutes')->numeric(),
+            KeyValue::make('config')
+                ->helperText('For API suppliers, configure request_body Items/Categories and response_data_path.')
+                ->columnSpanFull(),
         ]);
     }
 
@@ -56,6 +83,7 @@ class SupplierResource extends Resource
             ->columns([
                 TextColumn::make('name')->searchable()->sortable(),
                 TextColumn::make('code')->searchable()->sortable(),
+                TextColumn::make('connector_type')->label('Connector'),
                 IconColumn::make('enabled')->boolean(),
                 IconColumn::make('sync_enabled')->boolean()->label('Sync'),
                 TextColumn::make('in_stock_delivery_text')->label('Delivery'),
@@ -74,8 +102,12 @@ class SupplierResource extends Resource
                             return;
                         }
 
-                        app(SupplierSyncManager::class)->sync((string) $record->code);
-                        Notification::make()->title('Supplier sync finished')->success()->send();
+                        try {
+                            app(SupplierSyncManager::class)->sync((string) $record->code);
+                            Notification::make()->title('Supplier sync finished')->success()->send();
+                        } catch (\Throwable $exception) {
+                            Notification::make()->title('Supplier sync failed')->body($exception->getMessage())->danger()->send();
+                        }
                     }),
                 Action::make('dryRun')
                     ->label('Dry run')
@@ -84,8 +116,12 @@ class SupplierResource extends Resource
                             return;
                         }
 
-                        app(SupplierSyncManager::class)->sync((string) $record->code, new MtacSupplierSyncOptions(dryRun: true));
-                        Notification::make()->title('Dry run finished')->success()->send();
+                        try {
+                            app(SupplierSyncManager::class)->sync((string) $record->code, new SupplierSyncOptions(dryRun: true));
+                            Notification::make()->title('Dry run finished')->success()->send();
+                        } catch (\Throwable $exception) {
+                            Notification::make()->title('Dry run failed')->body($exception->getMessage())->danger()->send();
+                        }
                     }),
                 Action::make('testConnection')
                     ->label('Test connection')
@@ -96,7 +132,7 @@ class SupplierResource extends Resource
                             return;
                         }
 
-                        $ok = app(MtacFeedClient::class)->testConnection((string) $record->endpoint_url);
+                        $ok = app(SupplierConnectionTester::class)->test($record);
                         Notification::make()
                             ->title($ok ? 'Connection successful' : 'Connection failed')
                             ->{$ok ? 'success' : 'danger'}()

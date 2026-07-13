@@ -9,7 +9,15 @@ class Supplier extends Model
 {
     public const string CODE_MTAC = 'mtac';
 
+    public const string CODE_HELIK = 'helik';
+
     public const string CONNECTOR_XML_URL = 'xml_url';
+
+    public const string CONNECTOR_API = 'api';
+
+    public const string AUTH_NONE = 'none';
+
+    public const string AUTH_BEARER_TOKEN = 'bearer_token';
 
     protected $fillable = [
         'name',

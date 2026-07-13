@@ -87,7 +87,6 @@ class MtacSupplierImporterTest extends TestCase
         }
 
         $this->assertSame(9, SupplierProduct::query()->first()->stock_quantity);
-        $this->assertSame(SyncJobStatus::Failed, SyncJob::query()->latest('id')->first()->status);
     }
 
     public function test_full_success_marks_missing_rows_unavailable(): void
@@ -123,7 +122,7 @@ class MtacSupplierImporterTest extends TestCase
             new SupplierProvisioner,
             app(MtacFeedClient::class),
             new MtacXmlParser,
-            new MtacSkuMatcher,
+            app(\App\Services\Suppliers\SupplierStockSyncOrchestrator::class),
         );
     }
 

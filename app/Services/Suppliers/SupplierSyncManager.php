@@ -3,30 +3,31 @@
 namespace App\Services\Suppliers;
 
 use App\Models\Supplier;
+use App\Services\Suppliers\Helik\HelikSupplierImporter;
 use App\Services\Suppliers\Mtac\MtacSupplierImporter;
-use App\Services\Suppliers\Mtac\MtacSupplierSyncOptions;
-use App\Services\Suppliers\Mtac\MtacSupplierSyncResult;
 use InvalidArgumentException;
 
 class SupplierSyncManager
 {
     public function __construct(
         private readonly MtacSupplierImporter $mtacImporter,
+        private readonly HelikSupplierImporter $helikImporter,
         private readonly SupplierProvisioner $supplierProvisioner,
     ) {}
 
-    public function sync(string $supplierCode, ?MtacSupplierSyncOptions $options = null): MtacSupplierSyncResult
+    public function sync(string $supplierCode, ?SupplierSyncOptions $options = null): SupplierSyncResult
     {
         return match (mb_strtolower($supplierCode)) {
             Supplier::CODE_MTAC => $this->mtacImporter->sync($options),
+            Supplier::CODE_HELIK => $this->helikImporter->sync($options),
             default => throw new InvalidArgumentException('Unsupported supplier code: '.$supplierCode),
         };
     }
 
     /**
-     * @return array<int, array{code: string, name: string, result?: MtacSupplierSyncResult, error?: string}>
+     * @return array<int, array{code: string, name: string, result?: SupplierSyncResult, error?: string}>
      */
-    public function syncEnabledSuppliers(): array
+    public function syncEnabledSuppliers(?SupplierSyncOptions $options = null): array
     {
         $results = [];
 
@@ -42,7 +43,7 @@ class SupplierSyncManager
             }
 
             try {
-                $result = $this->sync((string) $supplier->code);
+                $result = $this->sync((string) $supplier->code, $options);
                 $results[] = [
                     'code' => (string) $supplier->code,
                     'name' => (string) $supplier->name,
@@ -60,8 +61,18 @@ class SupplierSyncManager
         return $results;
     }
 
+    public function syncAll(?SupplierSyncOptions $options = null): array
+    {
+        return $this->syncEnabledSuppliers($options);
+    }
+
     public function setupMtac(): Supplier
     {
         return $this->supplierProvisioner->ensureMtacSupplier();
+    }
+
+    public function setupHelik(): Supplier
+    {
+        return $this->supplierProvisioner->ensureHelikSupplier();
     }
 }

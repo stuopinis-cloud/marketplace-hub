@@ -35,4 +35,8 @@ return [
         ],
     ],
 
+    'entirem' => [
+        'token' => env('ENTIREM_API_TOKEN'),
+    ],
+
 ];

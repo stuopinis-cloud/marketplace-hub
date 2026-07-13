@@ -2,17 +2,6 @@
 
 namespace App\Services\Suppliers\Mtac;
 
-class MtacSupplierSyncOptions
-{
-    public function __construct(
-        public readonly bool $dryRun = false,
-        public readonly ?int $limit = null,
-        public readonly ?string $sku = null,
-        public readonly bool $verbose = false,
-    ) {}
+use App\Services\Suppliers\SupplierSyncOptions;
 
-    public function isPartialRun(): bool
-    {
-        return $this->limit !== null || filled($this->sku);
-    }
-}
+class MtacSupplierSyncOptions extends SupplierSyncOptions {}

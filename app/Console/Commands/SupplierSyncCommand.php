@@ -2,14 +2,14 @@
 
 namespace App\Console\Commands;
 
-use App\Services\Suppliers\Mtac\MtacSupplierSyncOptions;
 use App\Services\Suppliers\SupplierSyncManager;
+use App\Services\Suppliers\SupplierSyncOptions;
 use Illuminate\Console\Command;
 
 class SupplierSyncCommand extends Command
 {
     protected $signature = 'supplier:sync
-                            {supplier : Supplier code, e.g. mtac}
+                            {supplier : Supplier code, e.g. mtac or helik}
                             {--dry-run : Parse and match without writing supplier stock}
                             {--limit= : Process only the first N parsed feed entries}
                             {--sku= : Process only the selected supplier SKU}';
@@ -19,7 +19,7 @@ class SupplierSyncCommand extends Command
     public function handle(SupplierSyncManager $manager): int
     {
         $supplierCode = (string) $this->argument('supplier');
-        $options = new MtacSupplierSyncOptions(
+        $options = new SupplierSyncOptions(
             dryRun: (bool) $this->option('dry-run'),
             limit: filled($this->option('limit')) ? (int) $this->option('limit') : null,
             sku: filled($this->option('sku')) ? (string) $this->option('sku') : null,
@@ -46,6 +46,18 @@ class SupplierSyncCommand extends Command
         $this->line('Zero stock: '.$result->zeroStock);
         $this->line('Failed rows: '.$result->failedRows);
         $this->line('Missing from feed: '.$result->missingFromFeed);
+
+        if ($result->duplicateShopifySku > 0) {
+            $this->line('Duplicate Shopify SKU: '.$result->duplicateShopifySku);
+        }
+
+        if ($result->missingSku > 0) {
+            $this->line('Missing SKU rows: '.$result->missingSku);
+        }
+
+        if ($result->missingQuantity > 0) {
+            $this->line('Missing quantity rows: '.$result->missingQuantity);
+        }
 
         $this->components->info('Supplier sync finished.');
 
