@@ -12,6 +12,7 @@ use App\Models\ProductVariant;
 use App\Models\SyncJob;
 use App\Models\SyncJobItem;
 use App\Services\Marketplace\CategoryResolver;
+use App\Services\Marketplace\ProductAvailabilityResolver;
 use App\Support\MarketplaceChannelConfig;
 use DOMDocument;
 use DOMElement;
@@ -68,6 +69,7 @@ class VarleXmlExporter
         private readonly VarleExportGatekeeper $exportGatekeeper,
         private readonly VarleDeliveryResolver $deliveryResolver,
         private readonly VarleStockEvaluator $stockEvaluator,
+        private readonly ProductAvailabilityResolver $availabilityResolver,
     ) {}
 
     public function export(bool $debug = false): VarleExportResult
@@ -131,6 +133,7 @@ class VarleXmlExporter
             ->with([
                 'images',
                 'variants.inventoryLevels',
+                'variants.supplierProducts.supplier',
                 'sourceCategories',
             ])
             ->orderBy('id');
@@ -342,7 +345,7 @@ class VarleXmlExporter
                 continue;
             }
 
-            $variantValidation = $this->validator->validateVariant($variant, $config);
+            $variantValidation = $this->validator->validateVariant($variant, $config, $deliveryRule);
 
             if (! $variantValidation->isValid) {
                 $this->recordSkippedVariant(
@@ -359,16 +362,15 @@ class VarleXmlExporter
                 continue;
             }
 
-            $quantity = $this->sumInventoryQuantity($variant);
-            $stockAssessment = $this->stockEvaluator->assessVariant($variant, $quantity, $deliveryRule);
+            $availability = $this->availabilityResolver->resolve($variant, $deliveryRule);
 
-            if (! $stockAssessment['exportable']) {
+            if (! $availability['exportable']) {
                 $this->recordSkippedVariant(
                     $syncJob,
                     $variant,
-                    (string) $stockAssessment['issue_message'],
+                    (string) ($availability['issue_message'] ?? 'Variant is not exportable.'),
                     [],
-                    (string) $stockAssessment['issue_code'],
+                    (string) ($availability['issue_code'] ?? 'out_of_stock_no_backorder'),
                     $product,
                     $config,
                     $deliveryRule,
@@ -379,8 +381,10 @@ class VarleXmlExporter
 
             $validVariants[] = [
                 'variant' => $variant,
-                'quantity' => $stockAssessment['quantity'],
-                'delivery_class' => $stockAssessment['delivery_class'],
+                'quantity' => $availability['quantity'],
+                'delivery_class' => $availability['delivery_class'],
+                'delivery_text' => $availability['delivery_text'],
+                'availability_source' => $availability['source_type'],
             ];
         }
 
@@ -441,6 +445,7 @@ class VarleXmlExporter
         );
         $deliveryRule = $this->deliveryResolver->resolveForProduct($product, $config);
         $deliveryClasses = collect($validVariants)->pluck('delivery_class')->filter()->values()->all();
+        $deliveryTexts = collect($validVariants)->pluck('delivery_text')->filter()->values()->all();
 
         $payload = [
             'url' => $this->resolveProductUrl($product, $config),
@@ -457,7 +462,7 @@ class VarleXmlExporter
             'group' => (string) $product->handle,
             'is_multi_variant' => $outputVariants,
             'weight' => $this->weightInKg($firstVariant),
-            'delivery_text' => $this->deliveryResolver->resolveProductDeliveryText($deliveryRule, $deliveryClasses),
+            'delivery_text' => $this->deliveryResolver->resolveProductDeliveryText($deliveryRule, $deliveryClasses, $deliveryTexts),
         ];
 
         if ($priceOld !== null) {
@@ -1297,7 +1302,7 @@ class VarleXmlExporter
                 continue;
             }
 
-            $variantValidation = $this->validator->validateVariant($variant, $config);
+            $variantValidation = $this->validator->validateVariant($variant, $config, $deliveryRule);
 
             if (! $variantValidation->isValid) {
                 $this->previewSkippedVariants++;
@@ -1306,20 +1311,20 @@ class VarleXmlExporter
                 continue;
             }
 
-            $quantity = $this->sumInventoryQuantity($variant);
-            $stockAssessment = $this->stockEvaluator->assessVariant($variant, $quantity, $deliveryRule);
+            $availability = $this->availabilityResolver->resolve($variant, $deliveryRule);
 
-            if (! $stockAssessment['exportable']) {
+            if (! $availability['exportable']) {
                 $this->previewSkippedVariants++;
-                $this->recordPreviewSkip((string) $stockAssessment['issue_message']);
+                $this->recordPreviewSkip((string) ($availability['issue_message'] ?? 'Variant is not exportable.'));
 
                 continue;
             }
 
             $validVariants[] = [
                 'variant' => $variant,
-                'quantity' => $stockAssessment['quantity'],
-                'delivery_class' => $stockAssessment['delivery_class'],
+                'quantity' => $availability['quantity'],
+                'delivery_class' => $availability['delivery_class'],
+                'delivery_text' => $availability['delivery_text'],
             ];
         }
 

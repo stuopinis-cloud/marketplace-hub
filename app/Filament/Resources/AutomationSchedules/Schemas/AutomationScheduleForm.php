@@ -49,6 +49,9 @@ class AutomationScheduleForm
                 Toggle::make('run_shopify_import')
                     ->label('Run Shopify import')
                     ->default(true),
+                Toggle::make('run_supplier_sync')
+                    ->label('Run enabled supplier syncs')
+                    ->default(false),
                 Toggle::make('run_varle_export')
                     ->label('Run Varle export')
                     ->default(true),

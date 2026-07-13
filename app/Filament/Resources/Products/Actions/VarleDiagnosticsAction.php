@@ -48,15 +48,22 @@ class VarleDiagnosticsAction
 
                 foreach ($analysis['variant_diagnostics'] as $variant) {
                     $lines[] = sprintf(
-                        '- %s | barcode: %s | qty: %s | image: %s | exportable: %s | delivery: %s | %s',
+                        '- %s | local: %s | supplier: %s | source: %s | resolved qty: %s | delivery: %s | exportable: %s | %s',
                         e((string) ($variant['sku'] ?? '—')),
-                        e((string) ($variant['barcode'] ?? '—')),
-                        e((string) $variant['quantity']),
-                        $variant['has_variant_image'] ? 'yes' : 'no',
+                        e((string) ($variant['local_quantity'] ?? '0')),
+                        e((string) ($variant['supplier_quantity'] ?? '0')),
+                        e((string) ($variant['availability_source'] ?? '—')),
+                        e((string) ($variant['resolved_quantity'] ?? $variant['quantity'] ?? '0')),
+                        e((string) ($variant['resolved_delivery_text'] ?? $variant['delivery_class'] ?? '—')),
                         $variant['exportable'] ? 'yes' : 'no',
-                        e((string) $variant['delivery_class']),
                         e((string) ($variant['skipped_reason'] ?? '')),
                     );
+
+                    if (! empty($variant['supplier_name'])) {
+                        $lines[] = '  Supplier: '.e((string) $variant['supplier_name'])
+                            .' | stale: '.(! empty($variant['supplier_stock_stale']) ? 'yes' : 'no')
+                            .' | match: '.e((string) ($variant['supplier_match_status'] ?? '—'));
+                    }
                 }
 
                 $imageResolution = $analysis['image_resolution'] ?? [];

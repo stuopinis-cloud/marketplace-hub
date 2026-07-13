@@ -7,11 +7,13 @@ use App\Models\Product;
 use App\Models\ProductVariant;
 use App\Services\Marketplace\CategoryResolver;
 use App\Services\Marketplace\MarketplaceValidationResult;
+use App\Services\Marketplace\ProductAvailabilityResolver;
 
 class VarleProductValidator
 {
     public function __construct(
         private readonly CategoryResolver $categoryResolver,
+        private readonly ProductAvailabilityResolver $availabilityResolver,
     ) {}
 
     /**
@@ -69,10 +71,12 @@ class VarleProductValidator
 
     /**
      * @param  array<string, mixed>  $channelConfig
+     * @param  array<string, mixed>|null  $deliveryRule
      */
     public function validateVariant(
         ProductVariant $variant,
         array $channelConfig,
+        ?array $deliveryRule = null,
     ): MarketplaceValidationResult {
         $errors = [];
 
@@ -88,11 +92,14 @@ class VarleProductValidator
             $errors[] = 'Price must be greater than 0.';
         }
 
-        if ($variant->inventoryLevels->isEmpty()) {
+        $variant->loadMissing('inventoryLevels', 'supplierProducts.supplier');
+        $availability = $this->availabilityResolver->resolve($variant, $deliveryRule);
+
+        if ($variant->inventoryLevels->isEmpty() && $availability['supplier_quantity'] <= 0 && ! $variant->backorder_allowed) {
             $errors[] = 'Inventory quantity record is required.';
         }
 
-        if (! ($channelConfig['export_zero_stock'] ?? true) && $this->sumInventoryQuantity($variant) <= 0 && ! $variant->backorder_allowed) {
+        if (! ($channelConfig['export_zero_stock'] ?? true) && $availability['quantity'] <= 0 && ! $availability['exportable']) {
             $errors[] = 'Variant skipped because export_zero_stock is disabled and quantity is zero.';
         }
 
@@ -110,10 +117,5 @@ class VarleProductValidator
         }
 
         return blank(trim(strip_tags((string) $product->description_html)));
-    }
-
-    private function sumInventoryQuantity(ProductVariant $variant): int
-    {
-        return (int) $variant->inventoryLevels->sum('quantity');
     }
 }

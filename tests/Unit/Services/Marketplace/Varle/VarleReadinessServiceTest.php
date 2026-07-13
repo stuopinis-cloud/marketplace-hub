@@ -82,4 +82,36 @@ class VarleReadinessServiceTest extends TestCase
         $this->assertTrue($analysis['will_generate_variants_block']);
         $this->assertNotEmpty($analysis['meaningful_options']);
     }
+
+    public function test_local_zero_and_supplier_positive_can_still_be_ready(): void
+    {
+        $supplier = \App\Models\Supplier::query()->create([
+            'name' => 'M-Tac',
+            'code' => 'mtac',
+            'enabled' => true,
+            'in_stock_delivery_text' => '5-10 d.d.',
+            'stale_after_minutes' => 1800,
+        ]);
+
+        $variant = VarleCatalogFixtures::createSimpleDefaultTitleProduct(
+            productOverrides: ['vendor' => 'M-Tac'],
+        );
+        $variant->inventoryLevels()->update(['quantity' => 0]);
+        \App\Models\SupplierProduct::query()->create([
+            'supplier_id' => $supplier->id,
+            'product_variant_id' => $variant->id,
+            'supplier_sku' => (string) $variant->sku,
+            'stock_quantity' => 6,
+            'match_status' => \App\Models\SupplierProduct::MATCH_STATUS_MATCHED,
+            'match_method' => \App\Models\SupplierProduct::MATCH_METHOD_SKU,
+            'enabled' => true,
+            'last_synced_at' => now(),
+        ]);
+
+        $service = $this->app->make(VarleReadinessService::class);
+        $analysis = $service->analyze($variant->product->fresh(['variants.inventoryLevels', 'variants.supplierProducts.supplier', 'images', 'sourceCategories']));
+
+        $this->assertGreaterThan(0, $analysis['exportable_variants_count']);
+        $this->assertSame('supplier', $analysis['variant_diagnostics'][0]['availability_source']);
+    }
 }

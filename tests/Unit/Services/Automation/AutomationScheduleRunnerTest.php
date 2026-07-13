@@ -63,7 +63,19 @@ class AutomationScheduleRunnerTest extends TestCase
         $this->mock(DailyMarketplaceSync::class, function (MockInterface $mock): void {
             $mock->shouldReceive('run')
                 ->once()
-                ->with(true, true, true)
+                ->withArgs(function (
+                    bool $runShopifyImport,
+                    bool $runSupplierSync,
+                    bool $runReadinessRefresh,
+                    bool $runVarleExport,
+                    bool $generateFailedCsv,
+                ): bool {
+                    return $runShopifyImport === true
+                        && $runSupplierSync === false
+                        && $runReadinessRefresh === true
+                        && $runVarleExport === true
+                        && $generateFailedCsv === true;
+                })
                 ->andReturn(DailyMarketplaceSyncResult::success());
         });
 

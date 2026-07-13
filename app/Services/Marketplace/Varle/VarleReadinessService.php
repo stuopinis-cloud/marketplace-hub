@@ -9,6 +9,7 @@ use App\Models\Product;
 use App\Models\ProductVariant;
 use App\Support\MarketplaceChannelConfig;
 use App\Services\Marketplace\CategoryResolver;
+use App\Services\Marketplace\ProductAvailabilityResolver;
 
 class VarleReadinessService
 {
@@ -18,6 +19,7 @@ class VarleReadinessService
         private readonly VarleProductValidator $validator,
         private readonly VarleDeliveryResolver $deliveryResolver,
         private readonly VarleStockEvaluator $stockEvaluator,
+        private readonly ProductAvailabilityResolver $availabilityResolver,
     ) {}
 
     /**
@@ -25,7 +27,7 @@ class VarleReadinessService
      */
     public function analyze(Product $product, ?MarketplaceChannel $channel = null): array
     {
-        $product->loadMissing(['variants.inventoryLevels', 'images', 'sourceCategories']);
+        $product->loadMissing(['variants.inventoryLevels', 'variants.supplierProducts.supplier', 'images', 'sourceCategories']);
 
         $channel ??= $this->resolveChannel();
         $channelConfig = $this->channelConfig($channel);
@@ -82,7 +84,7 @@ class VarleReadinessService
         }
 
         foreach ($product->variants as $variant) {
-            $quantity = (int) $variant->inventoryLevels->sum('quantity');
+            $availability = $this->availabilityResolver->resolve($variant, $deliveryRule);
             $variantIssues = [];
             $exportable = true;
             $skipReason = null;
@@ -106,20 +108,25 @@ class VarleReadinessService
                 $skipReason = 'Price must be greater than 0.';
             }
 
-            if ($variant->inventoryLevels->isEmpty()) {
+            if ($variant->inventoryLevels->isEmpty() && $availability['supplier_quantity'] <= 0 && ! $variant->backorder_allowed) {
                 $exportable = false;
                 $issueCode = 'no_exportable_variants';
                 $skipReason = 'Inventory quantity record is required.';
             }
 
-            $stockAssessment = $this->stockEvaluator->assessVariant($variant, $quantity, $deliveryRule);
+            if ($availability['is_stale'] && $availability['supplier_quantity'] > 0 && $availability['local_quantity'] <= 0) {
+                if (! in_array('supplier_stock_stale', $issueCodes, true)) {
+                    $issueCodes[] = 'supplier_stock_stale';
+                    $issueMessages[] = 'Supplier stock is stale.';
+                }
+            }
 
-            if (! $stockAssessment['exportable']) {
+            if (! $availability['exportable']) {
                 $exportable = false;
-                $issueCode = $stockAssessment['issue_code'];
-                $skipReason = $stockAssessment['issue_message'];
+                $issueCode = $availability['issue_code'];
+                $skipReason = $availability['issue_message'];
             } elseif ($exportable) {
-                $deliveryClasses[] = $stockAssessment['delivery_class'];
+                $deliveryClasses[] = $availability['delivery_class'];
             }
 
             if ($exportable && $gate->allowed) {
@@ -134,7 +141,7 @@ class VarleReadinessService
             }
 
             if ($exportable) {
-                $groupRows = [['variant' => $variant, 'quantity' => $quantity]];
+                $groupRows = [['variant' => $variant, 'quantity' => $availability['quantity']]];
                 $images = VarleVariantPresenter::resolveExportImageUrls(
                     $product,
                     $groupRows,
@@ -168,7 +175,15 @@ class VarleReadinessService
                 'barcode' => $variant->barcode,
                 'price' => $variant->price,
                 'compare_at_price' => $variant->compare_at_price,
-                'quantity' => $quantity,
+                'quantity' => $availability['quantity'],
+                'local_quantity' => $availability['local_quantity'],
+                'supplier_quantity' => $availability['supplier_quantity'],
+                'availability_source' => $availability['source_type'],
+                'resolved_quantity' => $availability['quantity'],
+                'resolved_delivery_text' => $availability['delivery_text'],
+                'supplier_name' => $availability['supplier_name'],
+                'supplier_stock_stale' => $availability['is_stale'],
+                'supplier_match_status' => $availability['supplier_match_status'],
                 'inventory_policy' => $variant->inventory_policy,
                 'backorder_allowed' => $variant->backorder_allowed,
                 'has_variant_image' => filled($variant->image_url),
@@ -176,7 +191,7 @@ class VarleReadinessService
                 'exportable' => $exportable,
                 'issue_code' => $issueCode,
                 'skipped_reason' => $skipReason,
-                'delivery_class' => $stockAssessment['delivery_class'],
+                'delivery_class' => $availability['delivery_class'],
                 'issues' => $variantIssues,
             ];
         }
@@ -201,6 +216,12 @@ class VarleReadinessService
         $deliveryTextPreview = $this->deliveryResolver->resolveProductDeliveryText(
             $deliveryRule,
             $deliveryClasses !== [] ? $deliveryClasses : [VarleStockEvaluator::CLASS_IN_STOCK],
+            collect($variantDiagnostics)
+                ->where('exportable', true)
+                ->pluck('resolved_delivery_text')
+                ->filter()
+                ->values()
+                ->all(),
         );
 
         $isReady = $gate->allowed

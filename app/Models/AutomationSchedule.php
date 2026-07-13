@@ -14,6 +14,7 @@ class AutomationSchedule extends Model
         'run_time',
         'timezone',
         'run_shopify_import',
+        'run_supplier_sync',
         'run_varle_export',
         'generate_failed_csv',
         'last_run_at',
@@ -28,6 +29,7 @@ class AutomationSchedule extends Model
         return [
             'enabled' => 'boolean',
             'run_shopify_import' => 'boolean',
+            'run_supplier_sync' => 'boolean',
             'run_varle_export' => 'boolean',
             'generate_failed_csv' => 'boolean',
             'last_run_at' => 'datetime',

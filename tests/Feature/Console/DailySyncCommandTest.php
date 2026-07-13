@@ -18,7 +18,6 @@ class DailySyncCommandTest extends TestCase
         $this->mock(DailyMarketplaceSync::class, function (MockInterface $mock): void {
             $mock->shouldReceive('run')
                 ->once()
-                ->with(true, true, true)
                 ->andReturn(DailyMarketplaceSyncResult::success([
                     'shopify_import' => [
                         'sync_job_id' => 1,
@@ -48,7 +47,19 @@ class DailySyncCommandTest extends TestCase
         $this->mock(DailyMarketplaceSync::class, function (MockInterface $mock): void {
             $mock->shouldReceive('run')
                 ->once()
-                ->with(false, false, false)
+                ->withArgs(function (
+                    bool $runShopifyImport,
+                    bool $runSupplierSync,
+                    bool $runReadinessRefresh,
+                    bool $runVarleExport,
+                    bool $generateFailedCsv,
+                ): bool {
+                    return $runShopifyImport === false
+                        && $runSupplierSync === true
+                        && $runReadinessRefresh === true
+                        && $runVarleExport === false
+                        && $generateFailedCsv === false;
+                })
                 ->andReturn(DailyMarketplaceSyncResult::success());
         });
 

@@ -2,8 +2,10 @@
 
 namespace App\Services\Automation;
 
+use App\Services\Marketplace\Varle\VarleReadinessService;
 use App\Services\Marketplace\Varle\VarleXmlExporter;
 use App\Services\Shopify\ShopifyProductImporter;
+use App\Services\Suppliers\SupplierSyncManager;
 use App\Services\Sync\SyncJobFailedCsvExporter;
 use Throwable;
 
@@ -11,12 +13,16 @@ class DailyMarketplaceSync
 {
     public function __construct(
         private readonly ShopifyProductImporter $shopifyImporter,
+        private readonly SupplierSyncManager $supplierSyncManager,
+        private readonly VarleReadinessService $readinessService,
         private readonly VarleXmlExporter $varleExporter,
         private readonly SyncJobFailedCsvExporter $failedCsvExporter,
     ) {}
 
     public function run(
         bool $runShopifyImport = true,
+        bool $runSupplierSync = true,
+        bool $runReadinessRefresh = true,
         bool $runVarleExport = true,
         bool $generateFailedCsv = true,
     ): DailyMarketplaceSyncResult {
@@ -38,6 +44,26 @@ class DailyMarketplaceSync
                         $summary,
                     );
                 }
+            }
+
+            if ($runSupplierSync) {
+                $supplierResults = $this->supplierSyncManager->syncEnabledSuppliers();
+                $summary['supplier_sync'] = $supplierResults;
+
+                $failedSuppliers = collect($supplierResults)
+                    ->filter(fn (array $row): bool => isset($row['error']))
+                    ->pluck('name')
+                    ->all();
+
+                if ($failedSuppliers !== []) {
+                    $summary['supplier_sync_warnings'] = $failedSuppliers;
+                }
+            }
+
+            if ($runReadinessRefresh) {
+                $summary['readiness_refresh'] = [
+                    'products_refreshed' => $this->readinessService->refreshAll(),
+                ];
             }
 
             if ($runVarleExport) {

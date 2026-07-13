@@ -83,6 +83,8 @@ class AutomationScheduleRunner
     {
         $result = $this->dailyMarketplaceSync->run(
             runShopifyImport: $schedule->run_shopify_import,
+            runSupplierSync: (bool) $schedule->run_supplier_sync,
+            runReadinessRefresh: true,
             runVarleExport: $schedule->run_varle_export,
             generateFailedCsv: $schedule->generate_failed_csv,
         );

@@ -7,21 +7,60 @@ use Illuminate\Database\Eloquent\Relations\HasMany;
 
 class Supplier extends Model
 {
+    public const string CODE_MTAC = 'mtac';
+
+    public const string CONNECTOR_XML_URL = 'xml_url';
+
     protected $fillable = [
         'name',
         'code',
         'enabled',
+        'connector_type',
+        'endpoint_url',
+        'auth_type',
+        'credentials',
+        'stock_priority',
+        'in_stock_delivery_text',
+        'backorder_delivery_text',
+        'allow_backorder_export',
+        'sync_enabled',
+        'sync_interval_minutes',
+        'stale_after_minutes',
+        'last_sync_at',
+        'last_sync_status',
+        'config',
     ];
 
     protected function casts(): array
     {
         return [
             'enabled' => 'boolean',
+            'credentials' => 'encrypted:array',
+            'stock_priority' => 'integer',
+            'allow_backorder_export' => 'boolean',
+            'sync_enabled' => 'boolean',
+            'sync_interval_minutes' => 'integer',
+            'stale_after_minutes' => 'integer',
+            'last_sync_at' => 'datetime',
+            'config' => 'array',
         ];
     }
 
     public function supplierProducts(): HasMany
     {
         return $this->hasMany(SupplierProduct::class);
+    }
+
+    public function isStockStale(?\Illuminate\Support\Carbon $lastSyncedAt): bool
+    {
+        if ($lastSyncedAt === null) {
+            return true;
+        }
+
+        if ($this->stale_after_minutes === null) {
+            return false;
+        }
+
+        return $lastSyncedAt->lt(now()->subMinutes($this->stale_after_minutes));
     }
 }

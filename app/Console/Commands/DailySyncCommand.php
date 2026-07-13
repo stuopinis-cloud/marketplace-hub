@@ -9,25 +9,33 @@ class DailySyncCommand extends Command
 {
     protected $signature = 'marketplace:daily-sync
                             {--skip-import : Skip Shopify import}
+                            {--skip-supplier : Skip enabled supplier syncs}
+                            {--skip-readiness : Skip Varle readiness refresh}
                             {--skip-varle : Skip Varle XML export}
                             {--skip-failed-csv : Skip failed CSV export}';
 
-    protected $description = 'Run the daily Shopify import and Varle XML export workflow';
+    protected $description = 'Run the daily Shopify import, supplier sync, readiness refresh, and Varle XML export workflow';
 
     public function handle(DailyMarketplaceSync $dailySync): int
     {
         $runShopifyImport = ! $this->option('skip-import');
+        $runSupplierSync = ! $this->option('skip-supplier');
+        $runReadinessRefresh = ! $this->option('skip-readiness');
         $runVarleExport = ! $this->option('skip-varle');
         $generateFailedCsv = ! $this->option('skip-failed-csv');
 
         $this->components->info('Starting daily marketplace sync...');
         $this->line('Shopify import: '.($runShopifyImport ? 'enabled' : 'skipped'));
+        $this->line('Supplier sync: '.($runSupplierSync ? 'enabled' : 'skipped'));
+        $this->line('Readiness refresh: '.($runReadinessRefresh ? 'enabled' : 'skipped'));
         $this->line('Varle export: '.($runVarleExport ? 'enabled' : 'skipped'));
         $this->line('Failed CSV: '.($generateFailedCsv ? 'enabled' : 'skipped'));
         $this->newLine();
 
         $result = $dailySync->run(
             runShopifyImport: $runShopifyImport,
+            runSupplierSync: $runSupplierSync,
+            runReadinessRefresh: $runReadinessRefresh,
             runVarleExport: $runVarleExport,
             generateFailedCsv: $generateFailedCsv,
         );

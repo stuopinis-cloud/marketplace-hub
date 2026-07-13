@@ -63,14 +63,51 @@ class VarleDeliveryResolver
 
     /**
      * @param  array<int, string>  $deliveryClasses
+     * @param  array<int, string>  $deliveryTexts
      */
-    public function resolveProductDeliveryText(array $deliveryRule, array $deliveryClasses): string
+    public function resolveProductDeliveryText(array $deliveryRule, array $deliveryClasses, array $deliveryTexts = []): string
     {
-        if (in_array('backorder', $deliveryClasses, true)) {
+        if ($deliveryTexts !== [] && $deliveryClasses !== []) {
+            return $this->resolveSlowestDeliveryText($deliveryTexts, $deliveryClasses);
+        }
+
+        if (in_array(VarleStockEvaluator::CLASS_BACKORDER, $deliveryClasses, true)) {
             return (string) $deliveryRule['backorder_delivery_text'];
         }
 
         return (string) $deliveryRule['in_stock_delivery_text'];
+    }
+
+    /**
+     * @param  array<int, string>  $deliveryTexts
+     * @param  array<int, string>  $deliveryClasses
+     */
+    private function resolveSlowestDeliveryText(array $deliveryTexts, array $deliveryClasses): string
+    {
+        $rank = [
+            VarleStockEvaluator::CLASS_IN_STOCK => 1,
+            VarleStockEvaluator::CLASS_SUPPLIER => 2,
+            VarleStockEvaluator::CLASS_BACKORDER => 3,
+        ];
+
+        $slowestIndex = 0;
+        $slowestRank = 0;
+
+        foreach ($deliveryClasses as $index => $class) {
+            $classRank = $rank[$class] ?? 1;
+            if ($classRank >= $slowestRank) {
+                $slowestRank = $classRank;
+                $slowestIndex = $index;
+            }
+        }
+
+        $selected = $deliveryTexts[$slowestIndex] ?? null;
+
+        if (filled($selected)) {
+            return (string) $selected;
+        }
+
+        return (string) ($deliveryTexts[$slowestIndex] ?? $deliveryTexts[0] ?? '');
     }
 
     /**

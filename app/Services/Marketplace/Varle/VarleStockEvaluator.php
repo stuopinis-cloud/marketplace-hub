@@ -8,6 +8,8 @@ class VarleStockEvaluator
 {
     public const string CLASS_IN_STOCK = 'in_stock';
 
+    public const string CLASS_SUPPLIER = 'supplier';
+
     public const string CLASS_BACKORDER = 'backorder';
 
     public const string CLASS_BLOCKED = 'blocked';

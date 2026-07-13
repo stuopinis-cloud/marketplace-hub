@@ -416,6 +416,7 @@ class VarleXmlExporterTest extends TestCase
             $this->app->make(\App\Services\Marketplace\Varle\VarleExportGatekeeper::class),
             $this->app->make(\App\Services\Marketplace\Varle\VarleDeliveryResolver::class),
             $this->app->make(\App\Services\Marketplace\Varle\VarleStockEvaluator::class),
+            $this->app->make(\App\Services\Marketplace\ProductAvailabilityResolver::class),
         ) extends VarleXmlExporter
         {
             public int $batchCount = 0;
@@ -445,6 +446,7 @@ class VarleXmlExporterTest extends TestCase
             $this->app->make(\App\Services\Marketplace\Varle\VarleExportGatekeeper::class),
             $this->app->make(\App\Services\Marketplace\Varle\VarleDeliveryResolver::class),
             $this->app->make(\App\Services\Marketplace\Varle\VarleStockEvaluator::class),
+            $this->app->make(\App\Services\Marketplace\ProductAvailabilityResolver::class),
         ) extends VarleXmlExporter
         {
             protected function productsQuery(): \Illuminate\Database\Eloquent\Builder
