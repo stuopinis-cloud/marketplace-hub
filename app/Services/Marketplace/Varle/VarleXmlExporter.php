@@ -72,8 +72,11 @@ class VarleXmlExporter
         private readonly ProductAvailabilityResolver $availabilityResolver,
     ) {}
 
-    public function export(bool $debug = false): VarleExportResult
-    {
+    public function export(
+        bool $debug = false,
+        ?string $relativePath = null,
+        bool $registerFeedFile = true,
+    ): VarleExportResult {
         $this->debug = $debug;
         $this->resetCounters();
 
@@ -82,12 +85,14 @@ class VarleXmlExporter
         $syncJob = $this->startSyncJob($channel);
 
         try {
-            $relativePath = $this->feedRelativePath($config);
-            $feedPath = $this->writeFeedFile($relativePath, $config, $syncJob, $channel);
-            $publicUrl = url('/feeds/varle.xml');
+            $targetRelativePath = $relativePath ?? $this->feedRelativePath($config);
+            $feedPath = $this->writeFeedFile($targetRelativePath, $config, $syncJob, $channel);
+            $publicUrl = url('/feeds/'.basename($targetRelativePath));
 
-            $this->upsertFeedFile($channel, $config, $relativePath, $publicUrl);
-            $this->finishSyncJob($syncJob, $relativePath, $publicUrl);
+            if ($registerFeedFile) {
+                $this->upsertFeedFile($channel, $config, $targetRelativePath, $publicUrl);
+                $this->finishSyncJob($syncJob, $targetRelativePath, $publicUrl);
+            }
 
             return new VarleExportResult(
                 syncJobId: $syncJob->id,
@@ -102,6 +107,68 @@ class VarleXmlExporter
 
             throw $exception;
         }
+    }
+
+    public function resolveChannelForPublishing(): MarketplaceChannel
+    {
+        return $this->resolveChannel();
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    public function channelConfigForPublishing(MarketplaceChannel $channel): array
+    {
+        return $this->channelConfig($channel);
+    }
+
+    /**
+     * @param  array<string, mixed>  $config
+     */
+    public function feedRelativePathForPublishing(array $config): string
+    {
+        return $this->feedRelativePath($config);
+    }
+
+    /**
+     * @param  array<string, mixed>  $config
+     */
+    public function registerPublishedFeed(
+        MarketplaceChannel $channel,
+        array $config,
+        string $relativePath,
+        string $publicUrl,
+        int $syncJobId,
+    ): void {
+        $this->upsertFeedFile($channel, $config, $relativePath, $publicUrl);
+
+        $syncJob = SyncJob::query()->find($syncJobId);
+
+        if ($syncJob instanceof SyncJob) {
+            $this->finishSyncJob($syncJob, $relativePath, $publicUrl);
+        }
+    }
+
+    public function markExportPublicationFailed(int $syncJobId, string $message): void
+    {
+        $syncJob = SyncJob::query()->find($syncJobId);
+
+        if (! $syncJob instanceof SyncJob) {
+            return;
+        }
+
+        $syncJob->update([
+            'status' => SyncJobStatus::Failed,
+            'finished_at' => now(),
+            'error_message' => $message,
+            'context' => array_merge($syncJob->context ?? [], [
+                'publication_failed' => true,
+                'publication_error' => $message,
+                'exported_products' => $this->exportedProducts,
+                'exported_variants' => $this->exportedVariants,
+                'skipped_variants' => $this->skippedVariants,
+            ]),
+        ]);
     }
 
     public function preview(): VarleExportPreviewResult

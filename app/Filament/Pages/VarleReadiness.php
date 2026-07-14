@@ -8,10 +8,12 @@ use App\Filament\Pages\VarleReadiness\Widgets\LatestVarleExportWidget;
 use App\Filament\Pages\VarleReadiness\Widgets\VarleDataQualityStatsWidget;
 use App\Filament\Pages\VarleReadiness\Widgets\VarleExportApprovalStatsWidget;
 use App\Filament\Pages\VarleReadiness\Widgets\VarleReadinessBreakdownWidget;
+use App\Filament\Pages\VarleReadiness\Widgets\VarleReadinessRefreshStatusWidget;
 use App\Filament\Pages\VarleReadiness\Widgets\VarleReadinessSummaryWidget;
 use App\Filament\Pages\VarleReadiness\Widgets\VarleRecentProblemsWidget;
 use App\Filament\Resources\Products\ProductResource;
 use App\Services\Marketplace\Varle\VarleReadinessMetrics;
+use App\Services\Marketplace\Varle\VarleReadinessRefreshService;
 use App\Services\Sync\SyncJobFailedCsvExporter;
 use BackedEnum;
 use Filament\Actions\Action;
@@ -86,11 +88,21 @@ class VarleReadiness extends Page
                 ->icon(Heroicon::OutlinedArrowPath)
                 ->requiresConfirmation()
                 ->action(function (): void {
-                    Artisan::call('varle:refresh-readiness');
+                    $result = app(VarleReadinessRefreshService::class)->dispatch();
+
+                    if ($result->alreadyRunning) {
+                        Notification::make()
+                            ->title('Readiness refresh already running')
+                            ->body($result->message ?? 'A Varle readiness refresh is already running.')
+                            ->warning()
+                            ->send();
+
+                        return;
+                    }
 
                     Notification::make()
-                        ->title('Varle readiness refreshed')
-                        ->body(trim(Artisan::output()) ?: 'Readiness cache updated.')
+                        ->title('Varle readiness refresh started in background.')
+                        ->body('Sync job #'.$result->syncJob?->id.' is processing products in the queue.')
                         ->success()
                         ->send();
                 }),
@@ -111,6 +123,7 @@ class VarleReadiness extends Page
     {
         return [
             ShopifyImportStatusWidget::class,
+            VarleReadinessRefreshStatusWidget::class,
             LatestVarleExportWidget::class,
         ];
     }
@@ -129,7 +142,7 @@ class VarleReadiness extends Page
 
     public function getHeaderWidgetsColumns(): int|array
     {
-        return 2;
+        return 3;
     }
 
     public function getFooterWidgetsColumns(): int|array

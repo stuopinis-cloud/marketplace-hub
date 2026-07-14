@@ -8,6 +8,7 @@ use App\Filament\Resources\Products\Actions\ViewVarleIssuesAction;
 use App\Models\Product;
 use App\Models\SourceCategory;
 use App\Services\Marketplace\Varle\VarleIssueCodePresenter;
+use App\Services\Marketplace\Varle\VarleReadinessRefreshService;
 use App\Services\Marketplace\Varle\VarleReadinessService;
 use Filament\Actions\BulkAction;
 use Filament\Actions\BulkActionGroup;
@@ -278,27 +279,40 @@ class ProductsTable
                         ->label('Refresh readiness')
                         ->icon(Heroicon::OutlinedArrowPath)
                         ->action(function (Collection $records): void {
-                            $service = app(VarleReadinessService::class);
-                            $ready = 0;
-                            $notReady = 0;
+                            $ids = $records->pluck('id')->map(fn (mixed $id): int => (int) $id)->all();
 
-                            $records->each(function (Product $product) use ($service, &$ready, &$notReady): void {
-                                $cached = $service->cache($product);
-                                if ($cached->varle_is_ready) {
-                                    $ready++;
-                                } else {
-                                    $notReady++;
-                                }
-                            });
+                            if (count($ids) === 1) {
+                                $service = app(VarleReadinessService::class);
+                                $context = $service->createRunContext();
+                                $cached = $service->cache($records->first(), context: $context);
+
+                                Notification::make()
+                                    ->title('Readiness refreshed')
+                                    ->body(sprintf(
+                                        '1 product refreshed. Ready: %s.',
+                                        $cached->varle_is_ready ? 'yes' : 'no',
+                                    ))
+                                    ->success()
+                                    ->send();
+
+                                return;
+                            }
+
+                            $result = app(VarleReadinessRefreshService::class)->dispatch($ids);
+
+                            if ($result->alreadyRunning) {
+                                Notification::make()
+                                    ->title('Readiness refresh already running')
+                                    ->body($result->message ?? 'A Varle readiness refresh is already running.')
+                                    ->warning()
+                                    ->send();
+
+                                return;
+                            }
 
                             Notification::make()
-                                ->title('Readiness refreshed')
-                                ->body(sprintf(
-                                    '%d products refreshed. Ready: %d. Not ready: %d.',
-                                    $records->count(),
-                                    $ready,
-                                    $notReady,
-                                ))
+                                ->title('Varle readiness refresh started in background.')
+                                ->body(count($ids).' products queued in sync job #'.$result->syncJob?->id.'.')
                                 ->success()
                                 ->send();
                         }),

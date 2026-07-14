@@ -2,8 +2,8 @@
 
 namespace App\Services\Automation;
 
+use App\Services\Marketplace\Varle\VarleFeedPublisher;
 use App\Services\Marketplace\Varle\VarleReadinessService;
-use App\Services\Marketplace\Varle\VarleXmlExporter;
 use App\Services\Shopify\ShopifyProductImporter;
 use App\Services\Suppliers\SupplierSyncManager;
 use App\Services\Sync\SyncJobFailedCsvExporter;
@@ -15,7 +15,7 @@ class DailyMarketplaceSync
         private readonly ShopifyProductImporter $shopifyImporter,
         private readonly SupplierSyncManager $supplierSyncManager,
         private readonly VarleReadinessService $readinessService,
-        private readonly VarleXmlExporter $varleExporter,
+        private readonly VarleFeedPublisher $varleFeedPublisher,
         private readonly SyncJobFailedCsvExporter $failedCsvExporter,
     ) {}
 
@@ -47,13 +47,17 @@ class DailyMarketplaceSync
             }
 
             if ($runSupplierSync) {
-                $supplierResults = $this->supplierSyncManager->syncEnabledSuppliers();
+                $supplierResults = $this->supplierSyncManager->syncPublicationSuppliers();
                 $summary['supplier_sync'] = $supplierResults;
 
-                $failedSuppliers = collect($supplierResults)
-                    ->filter(fn (array $row): bool => isset($row['error']))
-                    ->pluck('name')
-                    ->all();
+                $failedSuppliers = collect([
+                    isset($supplierResults['mtac']['error']) ? 'M-Tac' : null,
+                    isset($supplierResults['helik']['error']) ? 'Helikon' : null,
+                    ...collect($supplierResults['csv'] ?? [])
+                        ->filter(fn (array $row): bool => isset($row['error']))
+                        ->pluck('name')
+                        ->all(),
+                ])->filter()->values()->all();
 
                 if ($failedSuppliers !== []) {
                     $summary['supplier_sync_warnings'] = $failedSuppliers;
@@ -67,13 +71,14 @@ class DailyMarketplaceSync
             }
 
             if ($runVarleExport) {
-                $exportResult = $this->varleExporter->export();
+                $exportResult = $this->varleFeedPublisher->publish();
                 $summary['varle_export'] = [
                     'sync_job_id' => $exportResult->syncJobId,
                     'exported_variants' => $exportResult->exportedVariants,
                     'skipped_variants' => $exportResult->skippedVariants,
                     'feed_path' => $exportResult->feedPath,
                     'public_url' => $exportResult->publicUrl,
+                    'published_atomically' => true,
                 ];
 
                 if ($exportResult->skippedVariants > 0) {

@@ -61,6 +61,90 @@ class SupplierSyncManager
         return $this->helikImporter->sync($options);
     }
 
+    public function syncMtac(?SupplierSyncOptions $options = null): SupplierSyncResult
+    {
+        $this->supplierProvisioner->ensureMtacSupplier();
+
+        return $this->mtacImporter->sync($options);
+    }
+
+    public function syncHelik(?SupplierSyncOptions $options = null): SupplierSyncResult
+    {
+        $this->supplierProvisioner->ensureHelikSupplier();
+
+        return $this->helikImporter->sync($options);
+    }
+
+    /**
+     * @return array<int, array{code: string, name: string, result?: SupplierSyncResult, error?: string}>
+     */
+    public function syncEnabledCsvSuppliers(?SupplierSyncOptions $options = null): array
+    {
+        $results = [];
+
+        $suppliers = Supplier::query()
+            ->where('enabled', true)
+            ->where('sync_enabled', true)
+            ->whereIn('connector_type', [Supplier::CONNECTOR_CSV_URL, Supplier::CONNECTOR_CSV_UPLOAD])
+            ->orderBy('stock_priority')
+            ->get();
+
+        foreach ($suppliers as $supplier) {
+            if (blank($supplier->code)) {
+                continue;
+            }
+
+            try {
+                $result = $this->csvImporter->sync($supplier, $options);
+                $results[] = [
+                    'code' => (string) $supplier->code,
+                    'name' => (string) $supplier->name,
+                    'result' => $result,
+                ];
+            } catch (\Throwable $exception) {
+                $results[] = [
+                    'code' => (string) $supplier->code,
+                    'name' => (string) $supplier->name,
+                    'error' => $exception->getMessage(),
+                ];
+            }
+        }
+
+        return $results;
+    }
+
+    /**
+     * @return array{
+     *     mtac: array{result?: SupplierSyncResult, error?: string},
+     *     helik: array{result?: SupplierSyncResult, error?: string},
+     *     csv: array<int, array{code: string, name: string, result?: SupplierSyncResult, error?: string}>
+     * }
+     */
+    public function syncPublicationSuppliers(?SupplierSyncOptions $options = null): array
+    {
+        $summary = [
+            'mtac' => [],
+            'helik' => [],
+            'csv' => [],
+        ];
+
+        try {
+            $summary['mtac']['result'] = $this->syncMtac($options);
+        } catch (\Throwable $exception) {
+            $summary['mtac']['error'] = $exception->getMessage();
+        }
+
+        try {
+            $summary['helik']['result'] = $this->syncHelik($options);
+        } catch (\Throwable $exception) {
+            $summary['helik']['error'] = $exception->getMessage();
+        }
+
+        $summary['csv'] = $this->syncEnabledCsvSuppliers($options);
+
+        return $summary;
+    }
+
     /**
      * @return array<int, array{code: string, name: string, result?: SupplierSyncResult, error?: string}>
      */

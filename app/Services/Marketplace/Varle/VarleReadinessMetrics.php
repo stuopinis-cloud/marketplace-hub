@@ -38,6 +38,16 @@ class VarleReadinessMetrics
             ->first();
     }
 
+    public function latestReadinessRefresh(): ?SyncJob
+    {
+        return SyncJob::query()
+            ->where('type', 'readiness')
+            ->where('source', 'marketplace')
+            ->where('channel', 'varle')
+            ->latest('id')
+            ->first();
+    }
+
     public function varleChannel(): ?MarketplaceChannel
     {
         return MarketplaceChannel::query()

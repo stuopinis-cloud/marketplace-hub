@@ -50,6 +50,15 @@ class DailySyncCommand extends Command
             $this->newLine();
         }
 
+        if (isset($result->summary['supplier_sync'])) {
+            $supplierSync = $result->summary['supplier_sync'];
+            $this->components->info('Supplier sync');
+            $this->line('M-Tac: '.(isset($supplierSync['mtac']['error']) ? $supplierSync['mtac']['error'] : 'ok'));
+            $this->line('Helikon: '.(isset($supplierSync['helik']['error']) ? $supplierSync['helik']['error'] : 'ok'));
+            $this->line('CSV suppliers synced: '.count($supplierSync['csv'] ?? []));
+            $this->newLine();
+        }
+
         if (isset($result->summary['varle_export'])) {
             $export = $result->summary['varle_export'];
             $this->components->info('Varle export');

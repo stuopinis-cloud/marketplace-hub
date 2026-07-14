@@ -3,7 +3,7 @@
 namespace App\Console\Commands;
 
 use App\Jobs\ExportVarleXmlJob;
-use App\Services\Marketplace\Varle\VarleXmlExporter;
+use App\Services\Marketplace\Varle\VarleFeedPublisher;
 use Illuminate\Console\Command;
 use Throwable;
 
@@ -13,17 +13,18 @@ class VarleExportXmlCommand extends Command
 
     protected $description = 'Export product variants to a Varle.lt XML feed';
 
-    public function handle(VarleXmlExporter $exporter): int
+    public function handle(VarleFeedPublisher $publisher): int
     {
         if ($this->option('queue')) {
             ExportVarleXmlJob::dispatch();
+
             $this->components->info('Varle XML export dispatched to the queue.');
 
             return self::SUCCESS;
         }
 
         try {
-            $result = $exporter->export(debug: (bool) $this->option('debug'));
+            $result = $publisher->publish(debug: (bool) $this->option('debug'));
         } catch (Throwable $exception) {
             $this->components->error('Varle XML export failed: '.$exception->getMessage());
 

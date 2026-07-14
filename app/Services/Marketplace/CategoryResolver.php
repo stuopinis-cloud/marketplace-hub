@@ -76,9 +76,11 @@ class CategoryResolver
      *     details: array<string, mixed>
      * }
      */
-    public function explain(Product $product, MarketplaceChannel $channel): array
+    public function explain(Product $product, MarketplaceChannel $channel, ?\Illuminate\Support\Collection $preloadedMappings = null): array
     {
-        $mappingMatch = $this->resolveFromMappings($product, $channel);
+        $mappingMatch = $preloadedMappings !== null
+            ? $this->resolveFromMappingCollection($product, $preloadedMappings)
+            : $this->resolveFromMappings($product, $channel);
 
         if ($mappingMatch !== null) {
             return $mappingMatch;
@@ -109,12 +111,29 @@ class CategoryResolver
      */
     private function resolveFromMappings(Product $product, MarketplaceChannel $channel): ?array
     {
-        $product->loadMissing('sourceCategories');
-
         $mappings = CategoryMapping::query()
             ->where('marketplace_channel_id', $channel->id)
             ->where('enabled', true)
             ->get();
+
+        return $this->resolveFromMappingCollection($product, $mappings);
+    }
+
+    /**
+     * @param  \Illuminate\Support\Collection<int, CategoryMapping>  $mappings
+     * @return array{
+     *     resolved_category: string,
+     *     source: string,
+     *     matched_mapping_id: int,
+     *     matched_source_type: string,
+     *     matched_source_value: string,
+     *     fallback_used: bool,
+     *     details: array<string, mixed>
+     * }|null
+     */
+    private function resolveFromMappingCollection(Product $product, \Illuminate\Support\Collection $mappings): ?array
+    {
+        $product->loadMissing('sourceCategories');
 
         if ($mappings->isEmpty()) {
             return null;

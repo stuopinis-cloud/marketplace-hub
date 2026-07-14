@@ -4,6 +4,7 @@ namespace App\Services\Marketplace\Varle;
 
 use App\Enums\ProductStatus;
 use App\Enums\VarleExportStatus;
+use App\Models\CategoryMapping;
 use App\Models\MarketplaceChannel;
 use App\Models\Product;
 use App\Models\ProductVariant;
@@ -25,16 +26,25 @@ class VarleReadinessService
     /**
      * @return array<string, mixed>
      */
-    public function analyze(Product $product, ?MarketplaceChannel $channel = null): array
+    public function analyze(Product $product, ?MarketplaceChannel $channel = null, ?VarleReadinessRunContext $context = null): array
     {
         $product->loadMissing(['variants.inventoryLevels', 'variants.supplierProducts.supplier', 'images', 'sourceCategories']);
 
-        $channel ??= $this->resolveChannel();
-        $channelConfig = $this->channelConfig($channel);
+        $context ??= $this->createRunContext();
+        $channel = $context->channel;
+        $channelConfig = $context->channelConfig;
         $config = MarketplaceChannelConfig::for($channelConfig);
-        $deliveryRule = $this->deliveryResolver->resolveForProduct($product, $channelConfig);
-        $categoryExplanation = $this->categoryResolver->explain($product, $channel);
-        $gate = $this->exportGatekeeper->assess($product, $channel);
+        $deliveryRule = $this->deliveryResolver->resolveForProductPreloaded($product, $channelConfig, [
+            'rules_by_vendor' => $context->vendorRulesByVendor,
+            'default_rule' => $context->defaultVendorRule,
+        ]);
+        $categoryExplanation = $this->categoryResolver->explain($product, $channel, $context->categoryMappings);
+        $gate = $this->exportGatekeeper->assess(
+            $product,
+            $channel,
+            $categoryExplanation,
+            $context->categoryMappings,
+        );
 
         $issueCodes = [];
         $issueMessages = [];
@@ -83,6 +93,10 @@ class VarleReadinessService
             $issueMessages[] = 'Vendor delivery rule is disabled.';
         }
 
+        $productValidation = $gate->allowed
+            ? $this->validator->validateProduct($product, $channel, $channelConfig, $categoryExplanation)
+            : null;
+
         foreach ($product->variants as $variant) {
             $availability = $this->availabilityResolver->resolve($variant, $deliveryRule);
             $variantIssues = [];
@@ -130,8 +144,7 @@ class VarleReadinessService
             }
 
             if ($exportable && $gate->allowed) {
-                $productValidation = $this->validator->validateProduct($product, $channel, $channelConfig, $categoryExplanation);
-                if (! $productValidation->isValid) {
+                if ($productValidation !== null && ! $productValidation->isValid) {
                     $exportable = false;
                     $skipReason = $productValidation->message();
                 }
@@ -288,9 +301,9 @@ class VarleReadinessService
         ];
     }
 
-    public function cache(Product $product, ?array $analysis = null): Product
+    public function cache(Product $product, ?array $analysis = null, ?VarleReadinessRunContext $context = null): Product
     {
-        $analysis ??= $this->analyze($product);
+        $analysis ??= $this->analyze($product, context: $context);
 
         $product->update([
             'varle_is_ready' => $analysis['is_ready_for_varle'],
@@ -308,24 +321,30 @@ class VarleReadinessService
             'varle_readiness_cached_at' => now(),
         ]);
 
-        return $product->refresh();
+        return $product;
     }
 
-    public function refreshAll(int $chunkSize = 100): int
+    public function createRunContext(): VarleReadinessRunContext
     {
-        $count = 0;
+        $channel = $this->resolveChannel();
+        $channelConfig = $this->channelConfig($channel);
+        $preloadedRules = $this->deliveryResolver->preloadRules();
 
-        Product::query()
-            ->with(['variants.inventoryLevels', 'images', 'sourceCategories'])
-            ->orderBy('id')
-            ->chunkById($chunkSize, function ($products) use (&$count): void {
-                foreach ($products as $product) {
-                    $this->cache($product);
-                    $count++;
-                }
-            });
+        return new VarleReadinessRunContext(
+            channel: $channel,
+            channelConfig: $channelConfig,
+            categoryMappings: CategoryMapping::query()
+                ->where('marketplace_channel_id', $channel->id)
+                ->where('enabled', true)
+                ->get(),
+            vendorRulesByVendor: $preloadedRules['rules_by_vendor'],
+            defaultVendorRule: $preloadedRules['default_rule'],
+        );
+    }
 
-        return $count;
+    public function refreshAll(int $chunkSize = 100, ?array $productIds = null): int
+    {
+        return app(VarleReadinessRefreshService::class)->runSynchronously($chunkSize, $productIds);
     }
 
     private function resolveChannel(): MarketplaceChannel

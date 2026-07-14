@@ -22,31 +22,73 @@ class VarleDeliveryResolver
      */
     public function resolveForProduct(Product $product, array $channelConfig): array
     {
+        return $this->resolveForProductPreloaded($product, $channelConfig, $this->preloadRules());
+    }
+
+    /**
+     * @return array{
+     *     rules_by_vendor: array<string, VendorDeliveryRule>,
+     *     default_rule: ?VendorDeliveryRule
+     * }
+     */
+    public function preloadRules(): array
+    {
+        $rules = VendorDeliveryRule::query()
+            ->where('enabled', true)
+            ->orderBy('priority')
+            ->orderBy('id')
+            ->get();
+
+        $rulesByVendor = [];
+
+        foreach ($rules as $rule) {
+            $key = mb_strtolower(trim((string) $rule->vendor));
+
+            if (! isset($rulesByVendor[$key])) {
+                $rulesByVendor[$key] = $rule;
+            }
+        }
+
+        return [
+            'rules_by_vendor' => $rulesByVendor,
+            'default_rule' => $rules->first(
+                fn (VendorDeliveryRule $rule): bool => $rule->vendor === VendorDeliveryRule::DEFAULT_VENDOR,
+            ),
+        ];
+    }
+
+    /**
+     * @param  array{
+     *     rules_by_vendor: array<string, VendorDeliveryRule>,
+     *     default_rule: ?VendorDeliveryRule
+     * }  $preloadedRules
+     * @return array{
+     *     vendor: ?string,
+     *     rule_id: ?int,
+     *     status: string,
+     *     in_stock_delivery_text: string,
+     *     backorder_delivery_text: string,
+     *     allow_backorder_export: bool,
+     *     enabled: bool
+     * }
+     */
+    public function resolveForProductPreloaded(Product $product, array $channelConfig, array $preloadedRules): array
+    {
         $config = MarketplaceChannelConfig::for($channelConfig);
         $defaults = $this->channelDefaults($config);
         $vendor = filled($product->vendor) ? trim((string) $product->vendor) : null;
 
         if ($vendor !== null) {
-            $rule = VendorDeliveryRule::query()
-                ->where('enabled', true)
-                ->where('vendor', $vendor)
-                ->orderBy('priority')
-                ->orderBy('id')
-                ->first();
+            $rule = $preloadedRules['rules_by_vendor'][mb_strtolower($vendor)] ?? null;
 
-            if ($rule !== null) {
+            if ($rule instanceof VendorDeliveryRule) {
                 return $this->rulePayload($rule, 'vendor_rule_found', $vendor);
             }
         }
 
-        $defaultRule = VendorDeliveryRule::query()
-            ->where('enabled', true)
-            ->where('vendor', VendorDeliveryRule::DEFAULT_VENDOR)
-            ->orderBy('priority')
-            ->orderBy('id')
-            ->first();
+        $defaultRule = $preloadedRules['default_rule'] ?? null;
 
-        if ($defaultRule !== null) {
+        if ($defaultRule instanceof VendorDeliveryRule) {
             return $this->rulePayload($defaultRule, 'default_rule_used', $vendor);
         }
 
