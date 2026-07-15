@@ -14,6 +14,7 @@ use Filament\Actions\BulkAction;
 use Filament\Actions\BulkActionGroup;
 use Filament\Actions\DeleteBulkAction;
 use Filament\Actions\EditAction;
+use Filament\Forms\Components\Select;
 use Filament\Notifications\Notification;
 use Filament\Support\Icons\Heroicon;
 use Filament\Tables\Columns\TextColumn;
@@ -220,6 +221,27 @@ class ProductsTable
                     ->query(fn (Builder $query, array $data): Builder => filled($data['value'] ?? null)
                         ? $query->whereHas('sourceCategories', fn (Builder $inner): Builder => $inner->where('source_categories.id', $data['value']))
                         : $query),
+                Filter::make('source_categories')
+                    ->label('Shopify categories / collections')
+                    ->schema([
+                        Select::make('category_ids')
+                            ->label('Categories')
+                            ->multiple()
+                            ->searchable()
+                            ->options(fn (): array => SourceCategory::query()->orderBy('name')->pluck('name', 'id')->all()),
+                    ])
+                    ->query(function (Builder $query, array $data): Builder {
+                        $ids = array_values(array_filter((array) ($data['category_ids'] ?? [])));
+
+                        if ($ids === []) {
+                            return $query;
+                        }
+
+                        return $query->whereHas(
+                            'sourceCategories',
+                            fn (Builder $inner): Builder => $inner->whereIn('source_categories.id', $ids),
+                        );
+                    }),
                 SelectFilter::make('varle_barcode_status')
                     ->label('Barcode status')
                     ->options([
@@ -317,17 +339,21 @@ class ProductsTable
                                 ->send();
                         }),
                     BulkAction::make('setVarleInclude')
-                        ->label('Set include')
+                        ->label('Include in Varle')
                         ->icon(Heroicon::OutlinedArrowUpCircle)
                         ->action(fn (Collection $records) => $records->each(fn (Product $product) => $product->update(['varle_export_status' => VarleExportStatus::Include]))),
                     BulkAction::make('setVarleExclude')
-                        ->label('Set exclude')
+                        ->label('Exclude from Varle')
                         ->icon(Heroicon::OutlinedNoSymbol)
                         ->action(fn (Collection $records) => $records->each(fn (Product $product) => $product->update(['varle_export_status' => VarleExportStatus::Exclude]))),
                     BulkAction::make('setPendingReview')
                         ->label('Set pending review')
                         ->icon(Heroicon::OutlinedClock)
                         ->action(fn (Collection $records) => $records->each(fn (Product $product) => $product->update(['varle_export_status' => VarleExportStatus::PendingReview]))),
+                    BulkAction::make('setVarleAuto')
+                        ->label('Set to Auto')
+                        ->icon(Heroicon::OutlinedSparkles)
+                        ->action(fn (Collection $records) => $records->each(fn (Product $product) => $product->update(['varle_export_status' => VarleExportStatus::Auto]))),
                     DeleteBulkAction::make(),
                 ]),
             ])

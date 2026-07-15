@@ -2,6 +2,7 @@
 
 namespace App\Models;
 
+use App\Enums\VarleExportStatus;
 use App\Services\Marketplace\CategoryResolver;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
@@ -15,6 +16,7 @@ class SourceCategory extends Model
         'external_id',
         'name',
         'handle',
+        'default_varle_export_status',
         'raw_payload',
     ];
 
@@ -22,6 +24,7 @@ class SourceCategory extends Model
     {
         return [
             'raw_payload' => 'array',
+            'default_varle_export_status' => VarleExportStatus::class,
         ];
     }
 
