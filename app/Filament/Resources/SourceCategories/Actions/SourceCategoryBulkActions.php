@@ -57,8 +57,16 @@ class SourceCategoryBulkActions
                 ])
                 ->modalDescription('Creates or updates category mappings for the selected Shopify collections. This does not change include/exclude status.')
                 ->action(function (Collection $records, array $data): void {
+                    $categoryIds = self::categoryIdsFromRecords($records);
+
+                    if ($categoryIds === []) {
+                        self::notifyNoCategoriesSelected();
+
+                        return;
+                    }
+
                     $count = app(CategoryBulkMappingService::class)->applyMapping(
-                        $records->pluck('id')->map(fn (mixed $id): int => (int) $id)->all(),
+                        $categoryIds,
                         (string) $data['target_category_path'],
                     );
 
@@ -74,6 +82,14 @@ class SourceCategoryBulkActions
                 ->requiresConfirmation()
                 ->modalDescription('Updates products using each category\'s default Varle export status. Categories without a default are skipped.')
                 ->action(function (Collection $records): void {
+                    $categoryIds = self::categoryIdsFromRecords($records);
+
+                    if ($categoryIds === []) {
+                        self::notifyNoCategoriesSelected();
+
+                        return;
+                    }
+
                     $service = app(CategoryBulkApprovalService::class);
                     $updatedTotal = 0;
                     $productIds = [];
@@ -106,6 +122,19 @@ class SourceCategoryBulkActions
         ];
     }
 
+    /**
+     * @return array<int, int>
+     */
+    public static function categoryIdsFromRecords(Collection $records): array
+    {
+        return $records
+            ->pluck('id')
+            ->map(fn (mixed $id): int => (int) $id)
+            ->unique()
+            ->values()
+            ->all();
+    }
+
     private static function exportStatusAction(
         string $name,
         string $label,
@@ -118,16 +147,30 @@ class SourceCategoryBulkActions
             ->requiresConfirmation()
             ->modalHeading($label)
             ->modalDescription(function (Collection $records) use ($status): HtmlString {
+                $categoryIds = self::categoryIdsFromRecords($records);
+
+                if ($categoryIds === []) {
+                    return new HtmlString('Select one or more categories in the table below to preview affected products.');
+                }
+
                 $text = app(CategoryBulkApprovalService::class)->previewDescription(
-                    $records->pluck('id')->map(fn (mixed $id): int => (int) $id)->all(),
+                    $categoryIds,
                     $status,
                 );
 
                 return new HtmlString(nl2br(e($text)));
             })
             ->action(function (Collection $records) use ($status, $label): void {
+                $categoryIds = self::categoryIdsFromRecords($records);
+
+                if ($categoryIds === []) {
+                    self::notifyNoCategoriesSelected();
+
+                    return;
+                }
+
                 $result = app(CategoryBulkApprovalService::class)->apply(
-                    $records->pluck('id')->map(fn (mixed $id): int => (int) $id)->all(),
+                    $categoryIds,
                     $status,
                 );
 
@@ -143,5 +186,14 @@ class SourceCategoryBulkActions
                     ->success()
                     ->send();
             });
+    }
+
+    private static function notifyNoCategoriesSelected(): void
+    {
+        Notification::make()
+            ->title('No categories selected')
+            ->body('Select one or more categories in the table below first.')
+            ->warning()
+            ->send();
     }
 }
