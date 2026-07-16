@@ -196,4 +196,9 @@ class SupplierSyncManager
     {
         return $this->supplierProvisioner->ensureHelikSupplier();
     }
+
+    public function setupPrezioso(): Supplier
+    {
+        return $this->supplierProvisioner->ensurePreziosoSupplier();
+    }
 }

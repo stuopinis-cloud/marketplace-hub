@@ -11,6 +11,8 @@ class Supplier extends Model
 
     public const string CODE_HELIK = 'helik';
 
+    public const string CODE_PREZIOSO = 'prezioso';
+
     public const string CONNECTOR_XML_URL = 'xml_url';
 
     public const string CONNECTOR_API = 'api';
@@ -24,6 +26,10 @@ class Supplier extends Model
     public const string AUTH_BEARER_TOKEN = 'bearer_token';
 
     public const string AUTH_BASIC = 'basic_auth';
+
+    public const string AUTH_CUSTOM_HEADERS = 'custom_headers';
+
+    public const string AUTH_NTLM = 'ntlm';
 
     protected $fillable = [
         'name',

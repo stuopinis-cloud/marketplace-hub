@@ -53,6 +53,39 @@ class SupplierCsvSupplierImporterTest extends TestCase
         $this->assertSame(0, SupplierProduct::query()->count());
     }
 
+    public function test_prezioso_style_semicolon_dry_run_matches_by_barcode_without_mutating(): void
+    {
+        $variant = $this->createVariant('LOCAL-SKU', 'Prezioso');
+        $variant->update(['barcode' => '5901234123457']);
+
+        $supplier = Supplier::query()->create([
+            'name' => 'Prezioso',
+            'code' => Supplier::CODE_PREZIOSO,
+            'enabled' => true,
+            'connector_type' => Supplier::CONNECTOR_CSV_URL,
+            'endpoint_url' => 'https://supplier.example/prezioso.csv',
+            'auth_type' => Supplier::AUTH_NONE,
+            'sync_enabled' => true,
+            'config' => [
+                'csv_delimiter' => 'auto',
+                'csv_encoding' => 'UTF-8',
+                'csv_sku_column' => 'CODICE',
+                'csv_barcode_column' => 'EAN',
+                'csv_stock_column' => 'QTA',
+                'vendor_scope' => ['Prezioso'],
+            ],
+        ]);
+
+        Http::fake([
+            'https://supplier.example/prezioso.csv' => Http::response("CODICE;EAN;QTA\nFEED-SKU;5901234123457;9\n"),
+        ]);
+
+        $result = $this->makeImporter()->sync($supplier, new SupplierSyncOptions(dryRun: true));
+
+        $this->assertSame(1, $result->matched);
+        $this->assertSame(0, SupplierProduct::query()->count());
+    }
+
     public function test_failed_fetch_preserves_previous_stock(): void
     {
         $variant = $this->createVariant('CSV-KEEP', 'Vendor Name');

@@ -68,6 +68,20 @@ class EditSupplier extends EditRecord
 
         unset($data['credential_token'], $data['credential_username'], $data['credential_password']);
 
+        $headersJson = data_get($data, 'config.request_headers_json');
+
+        if (is_string($headersJson) && filled($headersJson)) {
+            $decoded = json_decode($headersJson, true);
+
+            if (is_array($decoded)) {
+                $data['config'] = array_merge($data['config'] ?? $this->record->config ?? [], [
+                    'request_headers' => $decoded,
+                ]);
+            }
+        }
+
+        unset($data['config']['request_headers_json']);
+
         $upload = $data['csv_upload_file'] ?? null;
         unset($data['csv_upload_file']);
 

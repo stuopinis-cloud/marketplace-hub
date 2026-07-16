@@ -93,14 +93,26 @@ class SupplierSkuMatcherTest extends TestCase
         $this->assertSame('Helikon / Direct-Action', $resolved['supplier_name']);
     }
 
-    private function createVariant(string $vendor, string $sku): ProductVariant
+    public function test_barcode_match_takes_priority_over_sku(): void
     {
-        $source = Source::query()->create([
-            'type' => 'shopify',
-            'name' => 'Shopify',
-            'enabled' => true,
-            'config' => [],
-        ]);
+        $byBarcode = $this->createVariant('Prezioso', 'OTHER-SKU', '5901234123457');
+        $this->createVariant('Prezioso', 'FEED-SKU', '9999999999999');
+
+        $matcher = new VendorSkuMatcher(['Prezioso']);
+        $variants = $matcher->loadShopifyVariants();
+
+        $match = $matcher->match('FEED-SKU', $variants, collect(), '5901234123457');
+
+        $this->assertSame($byBarcode->id, $match['variant']?->id);
+        $this->assertSame(SupplierProduct::MATCH_METHOD_BARCODE, $match['match_method']);
+    }
+
+    private function createVariant(string $vendor, string $sku, ?string $barcode = null): ProductVariant
+    {
+        $source = Source::query()->firstOrCreate(
+            ['type' => 'shopify', 'name' => 'Shopify'],
+            ['enabled' => true, 'config' => []],
+        );
 
         $product = Product::query()->create([
             'source_id' => $source->id,
@@ -115,6 +127,7 @@ class SupplierSkuMatcherTest extends TestCase
             'product_id' => $product->id,
             'external_id' => 'variant-'.uniqid(),
             'sku' => $sku,
+            'barcode' => $barcode,
             'price' => 10,
         ]);
     }

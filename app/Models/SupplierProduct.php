@@ -17,6 +17,8 @@ class SupplierProduct extends Model
 
     public const string MATCH_METHOD_SKU = 'sku';
 
+    public const string MATCH_METHOD_SKU_GLOBAL = 'sku_global';
+
     public const string MATCH_METHOD_BARCODE = 'barcode';
 
     public const string AVAILABILITY_AVAILABLE = 'available';

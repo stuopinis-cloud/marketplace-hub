@@ -112,6 +112,55 @@ class SupplierCsvParserTest extends TestCase
         $this->parser()->parse("sku,qty\nA,1\n", $supplier);
     }
 
+    public function test_auto_detects_semicolon_delimiter(): void
+    {
+        $supplier = $this->makeSupplier([
+            'csv_delimiter' => 'auto',
+            'csv_sku_column' => 'CODICE',
+            'csv_stock_column' => 'QTA',
+        ]);
+
+        $parsed = $this->parser()->parse("CODICE;QTA;EAN\nSKU-9;3;5901234123457\n", $supplier);
+
+        $this->assertSame(';', $parsed['detected_delimiter']);
+        $this->assertSame('SKU-9', $parsed['entries'][0]['sku']);
+        $this->assertSame(3, $parsed['entries'][0]['stock_quantity']);
+    }
+
+    public function test_windows_1252_encoding_converts_to_utf8(): void
+    {
+        $supplier = $this->makeSupplier([
+            'csv_encoding' => 'Windows-1252',
+            'csv_sku_column' => 'sku',
+            'csv_title_column' => 'title',
+            'csv_stock_column' => 'qty',
+        ]);
+
+        $latin1Title = 'Caf'.chr(0xE9);
+        $csv = 'sku,title,qty'."\n".'ENC-1,'.$latin1Title.",2\n";
+
+        $parsed = $this->parser()->parse($csv, $supplier);
+
+        $this->assertSame('Café', $parsed['entries'][0]['raw_payload']['title']);
+    }
+
+    public function test_auto_encoding_converts_iso_8859_1_when_not_utf8(): void
+    {
+        $supplier = $this->makeSupplier([
+            'csv_encoding' => 'auto',
+            'csv_sku_column' => 'sku',
+            'csv_title_column' => 'title',
+            'csv_stock_column' => 'qty',
+        ]);
+
+        $latin1Title = 'na'.chr(0xEF).'ve';
+        $csv = 'sku,title,qty'."\n".'ENC-2,'.$latin1Title.",1\n";
+
+        $parsed = $this->parser()->parse($csv, $supplier);
+
+        $this->assertSame('naïve', $parsed['entries'][0]['raw_payload']['title']);
+    }
+
     private function parser(): SupplierCsvParser
     {
         return new SupplierCsvParser;

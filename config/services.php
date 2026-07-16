@@ -39,4 +39,9 @@ return [
         'token' => env('ENTIREM_API_TOKEN'),
     ],
 
+    'prezioso' => [
+        'ntlm_username' => env('PREZIOSO_NTLM_USERNAME'),
+        'ntlm_password' => env('PREZIOSO_NTLM_PASSWORD'),
+    ],
+
 ];

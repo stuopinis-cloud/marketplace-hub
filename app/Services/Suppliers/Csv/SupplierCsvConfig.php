@@ -3,6 +3,7 @@
 namespace App\Services\Suppliers\Csv;
 
 use App\Models\Supplier;
+use App\Services\Suppliers\SupplierSkuMatcher;
 
 class SupplierCsvConfig
 {
@@ -12,6 +13,7 @@ class SupplierCsvConfig
             'semicolon' => ';',
             'tab' => "\t",
             'pipe' => '|',
+            'auto' => ',',
             default => ',',
         };
     }
@@ -112,6 +114,36 @@ class SupplierCsvConfig
             fn (mixed $vendor): string => trim((string) $vendor),
             $scope,
         )));
+    }
+
+    public static function matchingStrategy(Supplier $supplier): string
+    {
+        $strategy = (string) self::get($supplier, 'matching_strategy', SupplierSkuMatcher::STRATEGY_SCOPED_DEFAULT);
+
+        return in_array($strategy, [
+            SupplierSkuMatcher::STRATEGY_SCOPED_DEFAULT,
+            SupplierSkuMatcher::STRATEGY_SKU_GLOBAL,
+        ], true)
+            ? $strategy
+            : SupplierSkuMatcher::STRATEGY_SCOPED_DEFAULT;
+    }
+
+    public static function matchByBarcode(Supplier $supplier): bool
+    {
+        if (self::matchingStrategy($supplier) === SupplierSkuMatcher::STRATEGY_SKU_GLOBAL) {
+            return (bool) self::get($supplier, 'match_by_barcode', false);
+        }
+
+        return (bool) self::get($supplier, 'match_by_barcode', true);
+    }
+
+    public static function requireVendorScope(Supplier $supplier): bool
+    {
+        if (self::matchingStrategy($supplier) === SupplierSkuMatcher::STRATEGY_SKU_GLOBAL) {
+            return (bool) self::get($supplier, 'require_vendor_scope', false);
+        }
+
+        return (bool) self::get($supplier, 'require_vendor_scope', true);
     }
 
     /**

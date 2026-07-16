@@ -4,6 +4,7 @@ namespace App\Services\Suppliers\Csv;
 
 use App\Models\Supplier;
 use App\Services\Suppliers\SupplierCredentialResolver;
+use App\Services\Suppliers\SupplierFeedFetchException;
 use Illuminate\Http\Client\ConnectionException;
 use Illuminate\Http\Client\PendingRequest;
 use Illuminate\Http\Client\RequestException;
@@ -16,7 +17,9 @@ class SupplierCsvFeedClient
 {
     public function __construct(
         private readonly SupplierCredentialResolver $credentialResolver,
+        private readonly CurlHttpTransport $curlTransport = new CurlHttpTransport,
         private readonly int $timeoutSeconds = 60,
+        private readonly int $connectTimeoutSeconds = 15,
         private readonly int $retryTimes = 3,
         private readonly int $retrySleepMilliseconds = 500,
     ) {}
@@ -33,44 +36,16 @@ class SupplierCsvFeedClient
     public function fetchFromUrl(Supplier $supplier): string
     {
         if (blank($supplier->endpoint_url)) {
-            throw new RuntimeException('CSV supplier endpoint URL is not configured.');
-        }
-
-        $maxBytes = $this->maxBytes();
-
-        try {
-            $response = $this->buildHttpClient($supplier)
-                ->withOptions(['stream' => true])
-                ->get((string) $supplier->endpoint_url);
-
-            if (! $response->successful()) {
-                throw new RuntimeException(sprintf(
-                    'CSV feed request failed with HTTP %s.',
-                    $response->status(),
-                ));
-            }
-
-            $body = (string) $response->body();
-
-            if (strlen($body) > $maxBytes) {
-                throw new RuntimeException('CSV feed response exceeded the configured size limit.');
-            }
-
-            if (trim($body) === '') {
-                throw new RuntimeException('CSV feed response was empty.');
-            }
-
-            Log::info('CSV supplier feed fetched', [
+            throw new SupplierFeedFetchException('CSV supplier endpoint URL is not configured.', [
                 'supplier_code' => $supplier->code,
-                'response_size' => strlen($body),
             ]);
-
-            return $body;
-        } catch (ConnectionException $exception) {
-            throw new RuntimeException('CSV feed request timed out or failed to connect.', 0, $exception);
-        } catch (RequestException $exception) {
-            throw new RuntimeException('CSV feed request failed.', 0, $exception);
         }
+
+        if ($supplier->auth_type === Supplier::AUTH_NTLM) {
+            return $this->fetchWithNtlm($supplier);
+        }
+
+        return $this->fetchWithHttpClient($supplier);
     }
 
     public function readUpload(Supplier $supplier): string
@@ -114,9 +89,117 @@ class SupplierCsvFeedClient
         }
     }
 
+    private function fetchWithNtlm(Supplier $supplier): string
+    {
+        $credentials = $this->credentialResolver->resolveUsernamePassword($supplier);
+
+        if ($credentials === null) {
+            throw new SupplierFeedFetchException(
+                'NTLM credentials are missing. Set encrypted supplier username/password or PREZIOSO_NTLM_USERNAME / PREZIOSO_NTLM_PASSWORD.',
+                ['supplier_code' => $supplier->code, 'auth_type' => Supplier::AUTH_NTLM],
+            );
+        }
+
+        $response = $this->curlTransport->getWithNtlm(
+            url: (string) $supplier->endpoint_url,
+            username: $credentials['username'],
+            password: $credentials['password'],
+            connectTimeoutSeconds: $this->connectTimeoutSeconds,
+            timeoutSeconds: $this->timeoutSeconds,
+        );
+
+        $context = [
+            'supplier_code' => $supplier->code,
+            'auth_type' => Supplier::AUTH_NTLM,
+            'http_status' => $response->httpStatus,
+            'curl_errno' => $response->errno,
+            'curl_error' => $response->error,
+            'response_size' => $response->responseSize,
+            'content_type' => $response->contentType,
+        ];
+
+        Log::info('CSV supplier NTLM feed fetched', $context);
+
+        if ($response->errno !== 0) {
+            throw new SupplierFeedFetchException(
+                sprintf('NTLM CSV feed cURL error (%d): %s', $response->errno, $response->error ?: 'unknown error'),
+                $context,
+            );
+        }
+
+        if ($response->httpStatus < 200 || $response->httpStatus >= 300) {
+            throw new SupplierFeedFetchException(
+                sprintf('NTLM CSV feed request failed with HTTP %d.', $response->httpStatus),
+                $context,
+            );
+        }
+
+        if (strlen($response->body) > $this->maxBytes()) {
+            throw new SupplierFeedFetchException('CSV feed response exceeded the configured size limit.', $context);
+        }
+
+        if (trim($response->body) === '') {
+            throw new SupplierFeedFetchException('NTLM CSV feed response was empty.', $context);
+        }
+
+        return $response->body;
+    }
+
+    private function fetchWithHttpClient(Supplier $supplier): string
+    {
+        $maxBytes = $this->maxBytes();
+
+        try {
+            $response = $this->buildHttpClient($supplier)
+                ->withOptions(['stream' => true])
+                ->get((string) $supplier->endpoint_url);
+
+            if (! $response->successful()) {
+                throw new SupplierFeedFetchException(sprintf(
+                    'CSV feed request failed with HTTP %s.',
+                    $response->status(),
+                ), [
+                    'supplier_code' => $supplier->code,
+                    'http_status' => $response->status(),
+                ]);
+            }
+
+            $body = (string) $response->body();
+
+            if (strlen($body) > $maxBytes) {
+                throw new SupplierFeedFetchException('CSV feed response exceeded the configured size limit.', [
+                    'supplier_code' => $supplier->code,
+                    'response_size' => strlen($body),
+                ]);
+            }
+
+            if (trim($body) === '') {
+                throw new SupplierFeedFetchException('CSV feed response was empty.', [
+                    'supplier_code' => $supplier->code,
+                ]);
+            }
+
+            Log::info('CSV supplier feed fetched', [
+                'supplier_code' => $supplier->code,
+                'response_size' => strlen($body),
+            ]);
+
+            return $body;
+        } catch (ConnectionException $exception) {
+            throw new SupplierFeedFetchException('CSV feed request timed out or failed to connect.', [
+                'supplier_code' => $supplier->code,
+            ], 0, $exception);
+        } catch (RequestException $exception) {
+            throw new SupplierFeedFetchException('CSV feed request failed.', [
+                'supplier_code' => $supplier->code,
+            ], 0, $exception);
+        }
+    }
+
     private function buildHttpClient(Supplier $supplier): PendingRequest
     {
         $request = Http::timeout($this->timeoutSeconds)
+            ->accept('text/csv,*/*')
             ->retry(
                 $this->retryTimes,
                 $this->retrySleepMilliseconds,
@@ -124,32 +207,37 @@ class SupplierCsvFeedClient
                 throw: false,
             );
 
-        $token = $this->credentialResolver->resolveBearerToken($supplier);
+        if ($supplier->auth_type === Supplier::AUTH_BEARER_TOKEN) {
+            $token = $this->credentialResolver->resolveBearerToken($supplier);
 
-        if (filled($token)) {
-            return $request->withToken((string) $token);
-        }
-
-        $username = data_get($supplier->credentials, 'username');
-        $password = data_get($supplier->credentials, 'password');
-
-        if (filled($username) && filled($password)) {
-            return $request->withBasicAuth((string) $username, (string) $password);
-        }
-
-        $headers = data_get($supplier->config, 'request_headers');
-
-        if (is_array($headers) && $headers !== []) {
-            $normalized = [];
-
-            foreach ($headers as $key => $value) {
-                if (is_string($key) && filled($value)) {
-                    $normalized[$key] = (string) $value;
-                }
+            if (filled($token)) {
+                return $request->withToken((string) $token);
             }
+        }
 
-            if ($normalized !== []) {
-                return $request->withHeaders($normalized);
+        if ($supplier->auth_type === Supplier::AUTH_BASIC) {
+            $credentials = $this->credentialResolver->resolveUsernamePassword($supplier);
+
+            if ($credentials !== null) {
+                return $request->withBasicAuth($credentials['username'], $credentials['password']);
+            }
+        }
+
+        if ($supplier->auth_type === Supplier::AUTH_CUSTOM_HEADERS || $supplier->auth_type === Supplier::AUTH_NONE) {
+            $headers = data_get($supplier->config, 'request_headers');
+
+            if (is_array($headers) && $headers !== []) {
+                $normalized = [];
+
+                foreach ($headers as $key => $value) {
+                    if (is_string($key) && filled($value)) {
+                        $normalized[$key] = (string) $value;
+                    }
+                }
+
+                if ($normalized !== []) {
+                    return $request->withHeaders($normalized);
+                }
             }
         }
 

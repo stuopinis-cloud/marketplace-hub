@@ -63,6 +63,8 @@ class SupplierResource extends Resource
                     Supplier::AUTH_NONE => 'None',
                     Supplier::AUTH_BEARER_TOKEN => 'Bearer token',
                     Supplier::AUTH_BASIC => 'Basic auth',
+                    Supplier::AUTH_CUSTOM_HEADERS => 'Custom headers',
+                    Supplier::AUTH_NTLM => 'NTLM',
                 ])
                 ->visible(fn (Get $get): bool => in_array($get('connector_type'), [
                     Supplier::CONNECTOR_API,
@@ -88,7 +90,13 @@ class SupplierResource extends Resource
                 ->afterStateHydrated(function (TextInput $component, ?Supplier $record): void {
                     $component->state(data_get($record?->credentials, 'username'));
                 })
-                ->visible(fn (Get $get): bool => $get('auth_type') === Supplier::AUTH_BASIC),
+                ->helperText(fn (Get $get): ?string => $get('auth_type') === Supplier::AUTH_NTLM
+                    ? 'Stored encrypted. Leave blank to use PREZIOSO_NTLM_USERNAME from the environment.'
+                    : null)
+                ->visible(fn (Get $get): bool => in_array($get('auth_type'), [
+                    Supplier::AUTH_BASIC,
+                    Supplier::AUTH_NTLM,
+                ], true)),
             TextInput::make('credential_password')
                 ->label('Password')
                 ->password()
@@ -97,7 +105,18 @@ class SupplierResource extends Resource
                 ->afterStateHydrated(function (TextInput $component, ?Supplier $record): void {
                     $component->state(filled(data_get($record?->credentials, 'password')) ? '********' : null);
                 })
-                ->visible(fn (Get $get): bool => $get('auth_type') === Supplier::AUTH_BASIC),
+                ->helperText(fn (Get $get): ?string => $get('auth_type') === Supplier::AUTH_NTLM
+                    ? 'Stored encrypted. Leave blank to keep the existing password or use PREZIOSO_NTLM_PASSWORD.'
+                    : null)
+                ->visible(fn (Get $get): bool => in_array($get('auth_type'), [
+                    Supplier::AUTH_BASIC,
+                    Supplier::AUTH_NTLM,
+                ], true)),
+            TextInput::make('config.request_headers_json')
+                ->label('Custom request headers (JSON object)')
+                ->helperText('Example: {"X-Api-Key":"secret"}')
+                ->visible(fn (Get $get): bool => $get('auth_type') === Supplier::AUTH_CUSTOM_HEADERS)
+                ->columnSpanFull(),
             Section::make('CSV settings')
                 ->visible(fn (Get $get): bool => in_array($get('connector_type'), [
                     Supplier::CONNECTOR_CSV_URL,
@@ -117,6 +136,7 @@ class SupplierResource extends Resource
                     Select::make('config.csv_delimiter')
                         ->label('Delimiter')
                         ->options([
+                            'auto' => 'Auto-detect',
                             'comma' => 'Comma',
                             'semicolon' => 'Semicolon',
                             'tab' => 'Tab',
@@ -126,7 +146,10 @@ class SupplierResource extends Resource
                     Select::make('config.csv_encoding')
                         ->label('Encoding')
                         ->options([
+                            'auto' => 'Auto-detect',
                             'UTF-8' => 'UTF-8',
+                            'Windows-1252' => 'Windows-1252',
+                            'ISO-8859-1' => 'ISO-8859-1',
                             'Windows-1257' => 'Windows-1257',
                             'ISO-8859-13' => 'ISO-8859-13',
                         ])
@@ -140,11 +163,24 @@ class SupplierResource extends Resource
                     TextInput::make('config.csv_availability_column')->label('Availability column'),
                     TextInput::make('config.csv_barcode_column')->label('Barcode column'),
                     TextInput::make('config.csv_vendor_column')->label('Vendor column'),
-                    TextInput::make('config.csv_title_column')->label('Title column'),
-                    TextInput::make('config.csv_price_column')->label('Price column'),
+                    TextInput::make('config.csv_title_column')->label('Title / name column'),
+                    TextInput::make('config.csv_price_column')->label('Cost / price column'),
+                    Select::make('config.matching_strategy')
+                        ->label('Matching strategy')
+                        ->options([
+                            'scoped_default' => 'Scoped default',
+                            'sku_global' => 'Global SKU',
+                        ])
+                        ->default('scoped_default')
+                        ->helperText('Global SKU ignores vendor and matches supplier SKU directly to Shopify variant SKU.')
+                        ->columnSpanFull(),
+                    Toggle::make('config.match_by_barcode')
+                        ->label('Match by barcode')
+                        ->helperText('When enabled, barcode matching is attempted before SKU matching.')
+                        ->default(false),
                     TextInput::make('config.vendor_scope')
-                        ->label('Vendor scope')
-                        ->helperText('Comma-separated Shopify vendor names used for SKU matching.')
+                        ->label('Vendor scope (comma-separated)')
+                        ->helperText('Used by scoped matching only. Leave empty for Global SKU.')
                         ->formatStateUsing(fn (mixed $state): ?string => is_array($state) ? implode(', ', $state) : (is_string($state) ? $state : null))
                         ->dehydrateStateUsing(function (?string $state): array {
                             if (blank($state)) {
@@ -157,6 +193,10 @@ class SupplierResource extends Resource
                             )));
                         })
                         ->columnSpanFull(),
+                    Toggle::make('config.require_vendor_scope')
+                        ->label('Require vendor scope')
+                        ->default(true)
+                        ->helperText('Disable for Global SKU matching.'),
                     Select::make('config.missing_from_feed_policy')
                         ->label('Missing from feed policy')
                         ->options([

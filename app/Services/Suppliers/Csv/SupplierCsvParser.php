@@ -21,7 +21,8 @@ class SupplierCsvParser
      *     }>,
      *     skipped: array<int, array<string, mixed>>,
      *     headers: array<int, string>,
-     *     preview_rows: array<int, array<string, mixed>>
+     *     preview_rows: array<int, array<string, mixed>>,
+     *     detected_delimiter: string
      * }
      */
     public function parse(string $content, Supplier $supplier, ?int $maxRows = null): array
@@ -39,7 +40,7 @@ class SupplierCsvParser
             throw new RuntimeException('CSV feed is empty.');
         }
 
-        $delimiter = SupplierCsvConfig::delimiterChar($supplier);
+        $delimiter = $this->resolveDelimiter($supplier, $lines);
         $enclosure = SupplierCsvConfig::enclosure($supplier);
         $escape = SupplierCsvConfig::escape($supplier);
         $hasHeader = SupplierCsvConfig::hasHeader($supplier);
@@ -135,7 +136,45 @@ class SupplierCsvParser
             'skipped' => $skipped,
             'headers' => $headers,
             'preview_rows' => $previewRows,
+            'detected_delimiter' => $delimiter,
         ];
+    }
+
+    /**
+     * @param  array<int, string>  $lines
+     */
+    public function detectDelimiter(array $lines): string
+    {
+        $sample = collect($lines)
+            ->filter(fn (string $line): bool => trim($line) !== '')
+            ->take(5)
+            ->implode("\n");
+
+        $candidates = [
+            ';' => substr_count($sample, ';'),
+            ',' => substr_count($sample, ','),
+            "\t" => substr_count($sample, "\t"),
+            '|' => substr_count($sample, '|'),
+        ];
+
+        arsort($candidates);
+        $best = array_key_first($candidates);
+
+        return ($best !== null && ($candidates[$best] ?? 0) > 0) ? $best : ',';
+    }
+
+    /**
+     * @param  array<int, string>  $lines
+     */
+    private function resolveDelimiter(Supplier $supplier, array $lines): string
+    {
+        $configured = (string) SupplierCsvConfig::get($supplier, 'csv_delimiter', 'comma');
+
+        if ($configured === 'auto') {
+            return $this->detectDelimiter($lines);
+        }
+
+        return SupplierCsvConfig::delimiterChar($supplier);
     }
 
     /**
@@ -188,19 +227,36 @@ class SupplierCsvParser
 
     private function normalizeEncoding(string $content, string $encoding): string
     {
-        $encoding = strtoupper($encoding === 'UTF8' ? 'UTF-8' : $encoding);
+        $encoding = strtoupper(str_replace('_', '-', $encoding === 'UTF8' ? 'UTF-8' : $encoding));
 
         if (str_starts_with($content, "\xEF\xBB\xBF")) {
             $content = substr($content, 3);
+            $encoding = 'UTF-8';
+        }
+
+        if ($encoding === 'AUTO') {
+            if (mb_check_encoding($content, 'UTF-8')) {
+                return $content;
+            }
+
+            foreach (['Windows-1252', 'ISO-8859-1', 'Windows-1257', 'ISO-8859-13'] as $candidate) {
+                $converted = @mb_convert_encoding($content, 'UTF-8', $candidate);
+
+                if (is_string($converted) && $converted !== '' && mb_check_encoding($converted, 'UTF-8')) {
+                    return $converted;
+                }
+            }
+
+            return $content;
         }
 
         if ($encoding === 'UTF-8') {
             return $content;
         }
 
-        $converted = mb_convert_encoding($content, 'UTF-8', $encoding);
+        $converted = @mb_convert_encoding($content, 'UTF-8', $encoding);
 
-        return $converted === false ? $content : $converted;
+        return is_string($converted) && $converted !== '' ? $converted : $content;
     }
 
     /**

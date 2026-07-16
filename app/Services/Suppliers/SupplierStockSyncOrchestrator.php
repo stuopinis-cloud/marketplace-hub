@@ -30,7 +30,7 @@ class SupplierStockSyncOrchestrator
         string $ambiguousMatchMessage,
         array $preSkippedRows = [],
     ): SupplierSyncResult {
-        $skuMatcher = new SupplierSkuMatcher($vendorScope);
+        $skuMatcher = SupplierSkuMatcher::forSupplier($supplier, $vendorScope);
         $syncJob = $this->startSyncJob($supplier, $syncJobSource);
         $stats = $this->initialStats();
 
