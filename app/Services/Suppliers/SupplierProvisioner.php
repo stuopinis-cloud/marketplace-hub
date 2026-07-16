@@ -64,6 +64,48 @@ class SupplierProvisioner
 
     public function ensurePreziosoSupplier(): Supplier
     {
+        $existing = Supplier::query()->where('code', Supplier::CODE_PREZIOSO)->first();
+
+        $operationalConfig = [
+            'response_type' => 'csv',
+            'method' => 'GET',
+            'csv_delimiter' => 'auto',
+            'csv_encoding' => 'auto',
+            'csv_has_header' => true,
+            'csv_data_start_row' => 1,
+            'matching_strategy' => 'sku_global',
+            'match_by_barcode' => false,
+            'require_vendor_scope' => false,
+            'vendor_scope' => [],
+            'missing_from_feed_policy' => 'mark_unavailable',
+        ];
+
+        // Column names are mapped in Filament after CSV preview. Never wipe existing mappings.
+        $columnKeys = [
+            'csv_sku_column',
+            'csv_barcode_column',
+            'csv_stock_column',
+            'csv_availability_column',
+            'csv_title_column',
+            'csv_price_column',
+            'csv_vendor_column',
+        ];
+
+        if ($existing === null) {
+            $config = array_merge($operationalConfig, array_fill_keys($columnKeys, null));
+        } else {
+            $existingConfig = is_array($existing->config) ? $existing->config : [];
+            $config = array_merge($existingConfig, $operationalConfig);
+
+            foreach ($columnKeys as $key) {
+                if (array_key_exists($key, $existingConfig)) {
+                    $config[$key] = $existingConfig[$key];
+                } else {
+                    unset($config[$key]);
+                }
+            }
+        }
+
         $attributes = [
             'name' => 'Prezioso',
             'enabled' => true,
@@ -78,26 +120,7 @@ class SupplierProvisioner
             'sync_enabled' => true,
             'sync_interval_minutes' => 1440,
             'stale_after_minutes' => 1800,
-            'config' => [
-                'response_type' => 'csv',
-                'method' => 'GET',
-                'csv_delimiter' => 'auto',
-                'csv_encoding' => 'auto',
-                'csv_has_header' => true,
-                'csv_data_start_row' => 1,
-                // Column names confirmed after CSV preview — leave unset until mapped in Filament.
-                'csv_sku_column' => null,
-                'csv_barcode_column' => null,
-                'csv_stock_column' => null,
-                'csv_availability_column' => null,
-                'csv_title_column' => null,
-                'csv_price_column' => null,
-                'matching_strategy' => 'sku_global',
-                'match_by_barcode' => false,
-                'require_vendor_scope' => false,
-                'vendor_scope' => [],
-                'missing_from_feed_policy' => 'mark_unavailable',
-            ],
+            'config' => $config,
         ];
 
         // Credentials come from PREZIOSO_NTLM_* env (or encrypted Filament credentials later).

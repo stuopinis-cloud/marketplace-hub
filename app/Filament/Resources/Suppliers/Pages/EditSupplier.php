@@ -68,15 +68,21 @@ class EditSupplier extends EditRecord
 
         unset($data['credential_token'], $data['credential_username'], $data['credential_password']);
 
+        // Preserve keys not present on the form (Filament replaces the whole JSON `config` blob).
+        $data['config'] = array_merge(
+            $this->record->config ?? [],
+            is_array($data['config'] ?? null) ? $data['config'] : [],
+        );
+
+        $data = $this->canonicalizeCsvColumnMappings($data);
+
         $headersJson = data_get($data, 'config.request_headers_json');
 
         if (is_string($headersJson) && filled($headersJson)) {
             $decoded = json_decode($headersJson, true);
 
             if (is_array($decoded)) {
-                $data['config'] = array_merge($data['config'] ?? $this->record->config ?? [], [
-                    'request_headers' => $decoded,
-                ]);
+                $data['config']['request_headers'] = $decoded;
             }
         }
 
@@ -88,11 +94,49 @@ class EditSupplier extends EditRecord
         if (filled($upload)) {
             $path = is_array($upload) ? (string) reset($upload) : (string) $upload;
             $storedPath = $this->finalizeCsvUpload($path);
-            $config = $data['config'] ?? $this->record->config ?? [];
-            $config['uploaded_file_path'] = $storedPath;
-            $config['uploaded_file_name'] = basename($storedPath);
-            $data['config'] = $config;
+            $data['config']['uploaded_file_path'] = $storedPath;
+            $data['config']['uploaded_file_name'] = basename($storedPath);
         }
+
+        return $data;
+    }
+
+    /**
+     * Promote any legacy nested mapping paths onto the canonical root-level config keys.
+     *
+     * @param  array<string, mixed>  $data
+     * @return array<string, mixed>
+     */
+    private function canonicalizeCsvColumnMappings(array $data): array
+    {
+        $config = is_array($data['config'] ?? null) ? $data['config'] : [];
+
+        $canonicalKeys = [
+            'csv_sku_column' => ['csv.sku_column', 'csv.columns.sku', 'column_mapping.sku'],
+            'csv_barcode_column' => ['csv.barcode_column', 'csv.columns.barcode', 'column_mapping.barcode'],
+            'csv_stock_column' => ['csv.stock_column', 'csv.columns.stock', 'column_mapping.stock'],
+            'csv_availability_column' => ['csv.availability_column', 'csv.columns.availability', 'column_mapping.availability'],
+            'csv_title_column' => ['csv.title_column', 'csv.columns.title', 'column_mapping.title'],
+            'csv_price_column' => ['csv.price_column', 'csv.columns.price', 'column_mapping.price'],
+            'csv_vendor_column' => ['csv.vendor_column', 'csv.columns.vendor', 'column_mapping.vendor'],
+        ];
+
+        foreach ($canonicalKeys as $canonical => $aliases) {
+            if (filled($config[$canonical] ?? null)) {
+                continue;
+            }
+
+            foreach ($aliases as $alias) {
+                $value = data_get($config, $alias);
+
+                if (filled($value)) {
+                    $config[$canonical] = is_string($value) ? trim($value) : $value;
+                    break;
+                }
+            }
+        }
+
+        $data['config'] = $config;
 
         return $data;
     }
