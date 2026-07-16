@@ -25,6 +25,10 @@ class VarleFeedPublisher
         $disk->makeDirectory('feeds');
         $disk->delete($tempRelativePath);
 
+        $syncJobId = null;
+        $finalized = false;
+        $publicUrl = null;
+
         try {
             $draftResult = $this->exporter->export(
                 debug: $debug,
@@ -32,19 +36,25 @@ class VarleFeedPublisher
                 registerFeedFile: false,
             );
 
+            $syncJobId = $draftResult->syncJobId;
             $tempAbsolutePath = $disk->path($tempRelativePath);
+
+            $this->exporter->updateSyncJobStageById($syncJobId, 'validating');
             $validation = $this->validator->validate($tempAbsolutePath);
 
             if (! $validation->valid) {
                 $disk->delete($tempRelativePath);
-                $this->exporter->markExportPublicationFailed($draftResult->syncJobId, $validation->message());
+                $this->exporter->markExportPublicationFailed($syncJobId, $validation->message());
+                $finalized = true;
 
                 throw new RuntimeException($validation->message());
             }
 
+            $this->exporter->updateSyncJobStageById($syncJobId, 'publishing');
             $this->atomicallyReplace($tempAbsolutePath, $disk->path($finalRelativePath));
             $publicUrl = url('/feeds/'.basename($finalRelativePath));
-            $this->exporter->registerPublishedFeed($channel, $config, $finalRelativePath, $publicUrl, $draftResult->syncJobId);
+            $this->exporter->registerPublishedFeed($channel, $config, $finalRelativePath, $publicUrl, $syncJobId);
+            $finalized = true;
 
             return new VarleExportResult(
                 syncJobId: $draftResult->syncJobId,
@@ -55,11 +65,24 @@ class VarleFeedPublisher
                 debugLines: $draftResult->debugLines,
             );
         } catch (Throwable $exception) {
+            if ($syncJobId !== null && ! $finalized && ! $this->exporter->isSyncJobFinalized($syncJobId)) {
+                $this->exporter->failExportSyncJob($syncJobId, $exception);
+                $finalized = true;
+            }
+
             if ($disk->exists($tempRelativePath)) {
                 $disk->delete($tempRelativePath);
             }
 
             throw $exception;
+        } finally {
+            if ($syncJobId !== null && ! $finalized && ! $this->exporter->isSyncJobFinalized($syncJobId)) {
+                $this->exporter->ensureSyncJobFinalized(
+                    $syncJobId,
+                    $finalRelativePath,
+                    $publicUrl,
+                );
+            }
         }
     }
 

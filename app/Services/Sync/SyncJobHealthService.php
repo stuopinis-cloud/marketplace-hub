@@ -86,21 +86,18 @@ class SyncJobHealthService
         }
 
         $threshold = now()->subMinutes($this->stuckAfterMinutes());
+        $lastActivity = $this->lastActivityAt($job);
 
-        if ($job->heartbeat_at !== null) {
-            return $job->heartbeat_at->lte($threshold);
+        if ($lastActivity === null) {
+            return true;
         }
 
-        if ($job->started_at !== null) {
-            return $job->started_at->lte($threshold);
-        }
-
-        return true;
+        return $lastActivity->lte($threshold);
     }
 
     public function lastActivityAt(SyncJob $job): ?CarbonInterface
     {
-        return $job->heartbeat_at ?? $job->started_at;
+        return $job->heartbeat_at ?? $job->updated_at ?? $job->started_at;
     }
 
     public function heartbeatAgeSeconds(SyncJob $job): ?int

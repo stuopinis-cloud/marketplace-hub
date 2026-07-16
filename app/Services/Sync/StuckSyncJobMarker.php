@@ -33,6 +33,7 @@ class StuckSyncJobMarker
             $job->update([
                 'status' => SyncJobStatus::Failed,
                 'finished_at' => now(),
+                'heartbeat_at' => now(),
                 'error_message' => sprintf(
                     'Marked failed automatically because heartbeat was stale for more than %d minutes.',
                     $staleMinutes,
@@ -71,6 +72,7 @@ class StuckSyncJobMarker
         $job->update([
             'status' => SyncJobStatus::Failed,
             'finished_at' => now(),
+            'heartbeat_at' => now(),
             'error_message' => sprintf(
                 'Marked failed automatically because heartbeat was stale for more than %d minutes.',
                 $staleMinutes,

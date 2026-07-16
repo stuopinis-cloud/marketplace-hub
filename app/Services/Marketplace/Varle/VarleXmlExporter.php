@@ -30,6 +30,8 @@ class VarleXmlExporter
 
     private int $skippedVariants = 0;
 
+    private int $currentProductIndex = 0;
+
     private bool $debug = false;
 
     private int $debugProductCount = 0;
@@ -83,15 +85,20 @@ class VarleXmlExporter
         $channel = $this->resolveChannel();
         $config = $this->channelConfig($channel);
         $syncJob = $this->startSyncJob($channel);
+        $finalized = false;
 
         try {
             $targetRelativePath = $relativePath ?? $this->feedRelativePath($config);
+            $this->updateSyncJobStage($syncJob, 'writing_feed');
             $feedPath = $this->writeFeedFile($targetRelativePath, $config, $syncJob, $channel);
             $publicUrl = url('/feeds/'.basename($targetRelativePath));
 
             if ($registerFeedFile) {
                 $this->upsertFeedFile($channel, $config, $targetRelativePath, $publicUrl);
                 $this->finishSyncJob($syncJob, $targetRelativePath, $publicUrl);
+                $finalized = true;
+            } else {
+                $this->updateSyncJobStage($syncJob, 'exported_draft');
             }
 
             return new VarleExportResult(
@@ -104,9 +111,70 @@ class VarleXmlExporter
             );
         } catch (Throwable $exception) {
             $this->failSyncJob($syncJob, $exception);
+            $finalized = true;
 
             throw $exception;
+        } finally {
+            if (! $finalized && $registerFeedFile && $syncJob->fresh()?->status === SyncJobStatus::Running) {
+                $this->failSyncJob(
+                    $syncJob,
+                    new \RuntimeException('Varle export process exited while sync job was still running.'),
+                );
+            }
         }
+    }
+
+    public function isSyncJobFinalized(int $syncJobId): bool
+    {
+        $syncJob = SyncJob::query()->find($syncJobId);
+
+        return ! $syncJob instanceof SyncJob || $syncJob->status !== SyncJobStatus::Running;
+    }
+
+    public function failExportSyncJob(int $syncJobId, Throwable|string $error): void
+    {
+        $syncJob = SyncJob::query()->find($syncJobId);
+
+        if (! $syncJob instanceof SyncJob || $syncJob->status !== SyncJobStatus::Running) {
+            return;
+        }
+
+        $exception = $error instanceof Throwable
+            ? $error
+            : new \RuntimeException($error);
+
+        $this->failSyncJob($syncJob, $exception);
+    }
+
+    public function ensureSyncJobFinalized(
+        int $syncJobId,
+        ?string $relativePath = null,
+        ?string $publicUrl = null,
+    ): void {
+        $syncJob = SyncJob::query()->find($syncJobId);
+
+        if (! $syncJob instanceof SyncJob || $syncJob->status !== SyncJobStatus::Running) {
+            return;
+        }
+
+        if ($relativePath !== null && $publicUrl !== null) {
+            $this->finishSyncJob($syncJob, $relativePath, $publicUrl);
+
+            return;
+        }
+
+        $this->finalizeSyncJobInPlace($syncJob);
+    }
+
+    public function updateSyncJobStageById(int $syncJobId, string $stage): void
+    {
+        $syncJob = SyncJob::query()->find($syncJobId);
+
+        if (! $syncJob instanceof SyncJob || $syncJob->status !== SyncJobStatus::Running) {
+            return;
+        }
+
+        $this->updateSyncJobStage($syncJob, $stage);
     }
 
     public function resolveChannelForPublishing(): MarketplaceChannel
@@ -153,13 +221,14 @@ class VarleXmlExporter
     {
         $syncJob = SyncJob::query()->find($syncJobId);
 
-        if (! $syncJob instanceof SyncJob) {
+        if (! $syncJob instanceof SyncJob || $syncJob->status !== SyncJobStatus::Running) {
             return;
         }
 
         $syncJob->update([
             'status' => SyncJobStatus::Failed,
             'finished_at' => now(),
+            'heartbeat_at' => now(),
             'error_message' => $message,
             'context' => array_merge($syncJob->context ?? [], [
                 'publication_failed' => true,
@@ -167,6 +236,8 @@ class VarleXmlExporter
                 'exported_products' => $this->exportedProducts,
                 'exported_variants' => $this->exportedVariants,
                 'skipped_variants' => $this->skippedVariants,
+                'stage' => 'failed',
+                'last_progress_at' => now()->toIso8601String(),
             ]),
         ]);
     }
@@ -263,6 +334,9 @@ class VarleXmlExporter
         array $config,
         MarketplaceChannel $channel,
     ): void {
+        $this->currentProductIndex++;
+        $this->updateSyncJobProgress($syncJob, $product, 'exporting_product');
+
         $variants = $product->variants;
 
         foreach ($variants as $variant) {
@@ -778,11 +852,47 @@ class VarleXmlExporter
             'channel' => 'varle',
             'status' => SyncJobStatus::Running,
             'started_at' => now(),
+            'heartbeat_at' => now(),
+            'process_id' => getmypid() ?: null,
             'context' => [
                 'marketplace_channel_id' => $channel->id,
                 'export_chunk_size' => $this->exportChunkSize(),
                 'vat_rate' => $this->resolveVatRate($this->channelConfig($channel)),
+                'stage' => 'starting',
+                'last_progress_at' => now()->toIso8601String(),
             ],
+        ]);
+    }
+
+    private function updateSyncJobProgress(SyncJob $syncJob, Product $product, string $stage): void
+    {
+        $syncJob->update([
+            'success_items' => $this->exportedVariants,
+            'failed_items' => max((int) $syncJob->failed_items, $this->skippedVariants),
+            'heartbeat_at' => now(),
+            'process_id' => getmypid() ?: $syncJob->process_id,
+            'context' => array_merge($syncJob->context ?? [], [
+                'current_product_handle' => (string) ($product->handle ?? ''),
+                'current_product_id' => $product->id,
+                'current_product_index' => $this->currentProductIndex,
+                'stage' => $stage,
+                'last_progress_at' => now()->toIso8601String(),
+                'exported_products' => $this->exportedProducts,
+                'exported_variants' => $this->exportedVariants,
+                'skipped_variants' => $this->skippedVariants,
+            ]),
+        ]);
+    }
+
+    private function updateSyncJobStage(SyncJob $syncJob, string $stage): void
+    {
+        $syncJob->update([
+            'heartbeat_at' => now(),
+            'process_id' => getmypid() ?: $syncJob->process_id,
+            'context' => array_merge($syncJob->context ?? [], [
+                'stage' => $stage,
+                'last_progress_at' => now()->toIso8601String(),
+            ]),
         ]);
     }
 
@@ -894,7 +1004,10 @@ class VarleXmlExporter
         $syncJob->update([
             'status' => $status,
             'finished_at' => now(),
-            'failed_items' => $this->skippedVariants,
+            'heartbeat_at' => now(),
+            'success_items' => max((int) $syncJob->success_items, $this->exportedVariants),
+            'failed_items' => max((int) $syncJob->failed_items, $this->skippedVariants),
+            'error_message' => null,
             'context' => array_merge($syncJob->context ?? [], [
                 'exported_products' => $this->exportedProducts,
                 'exported_variants' => $this->exportedVariants,
@@ -902,6 +1015,34 @@ class VarleXmlExporter
                 'feed_path' => $relativePath,
                 'public_url' => $publicUrl,
                 'warnings' => $this->warnings,
+                'stage' => 'finished',
+                'last_progress_at' => now()->toIso8601String(),
+            ]),
+        ]);
+    }
+
+    private function finalizeSyncJobInPlace(SyncJob $syncJob): void
+    {
+        $status = match (true) {
+            $this->skippedVariants > 0 && $this->exportedVariants > 0 => SyncJobStatus::Partial,
+            $this->skippedVariants > 0 && $this->exportedVariants === 0 => SyncJobStatus::Failed,
+            default => SyncJobStatus::Completed,
+        };
+
+        $syncJob->update([
+            'status' => $status,
+            'finished_at' => now(),
+            'heartbeat_at' => now(),
+            'success_items' => max((int) $syncJob->success_items, $this->exportedVariants),
+            'failed_items' => max((int) $syncJob->failed_items, $this->skippedVariants),
+            'error_message' => null,
+            'context' => array_merge($syncJob->context ?? [], [
+                'exported_products' => $this->exportedProducts,
+                'exported_variants' => $this->exportedVariants,
+                'skipped_variants' => $this->skippedVariants,
+                'warnings' => $this->warnings,
+                'stage' => 'finished',
+                'last_progress_at' => now()->toIso8601String(),
             ]),
         ]);
     }
@@ -911,13 +1052,19 @@ class VarleXmlExporter
         $syncJob->update([
             'status' => SyncJobStatus::Failed,
             'finished_at' => now(),
-            'failed_items' => $this->skippedVariants,
+            'heartbeat_at' => now(),
+            'failed_items' => max((int) $syncJob->failed_items, $this->skippedVariants),
+            'success_items' => max((int) $syncJob->success_items, $this->exportedVariants),
             'error_message' => $exception->getMessage(),
             'context' => array_merge($syncJob->context ?? [], [
                 'exported_products' => $this->exportedProducts,
                 'exported_variants' => $this->exportedVariants,
                 'skipped_variants' => $this->skippedVariants,
                 'warnings' => $this->warnings,
+                'exception_message' => $exception->getMessage(),
+                'exception_class' => $exception::class,
+                'stage' => 'failed',
+                'last_progress_at' => now()->toIso8601String(),
             ]),
         ]);
     }
@@ -1249,6 +1396,7 @@ class VarleXmlExporter
         $this->exportedProducts = 0;
         $this->exportedVariants = 0;
         $this->skippedVariants = 0;
+        $this->currentProductIndex = 0;
         $this->warnings = [];
         $this->debugLines = [];
         $this->debugProductCount = 0;

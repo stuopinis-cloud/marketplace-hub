@@ -68,6 +68,8 @@ class SyncJobHealthServiceTest extends TestCase
             'heartbeat_at' => null,
         ]);
 
+        $job->forceFill(['updated_at' => now()->subMinutes(20)])->save();
+
         $this->assertTrue($this->service->isStuck($job));
         $this->assertSame(SyncJobHealthService::HEALTH_STUCK, $this->service->assess($job)['health_status']);
     }

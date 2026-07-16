@@ -45,7 +45,9 @@ class VarleFeedPublisherTest extends TestCase
                         'http://example.test/feeds/varle.xml.tmp',
                     );
                 });
+            $mock->shouldReceive('updateSyncJobStageById')->once()->with(9, 'validating');
             $mock->shouldReceive('markExportPublicationFailed')->once();
+            $mock->shouldReceive('isSyncJobFinalized')->andReturn(false);
         });
 
         try {
@@ -92,7 +94,10 @@ class VarleFeedPublisherTest extends TestCase
                         'http://example.test/feeds/varle.xml.tmp',
                     );
                 });
+            $mock->shouldReceive('updateSyncJobStageById')->once()->with(10, 'validating');
+            $mock->shouldReceive('updateSyncJobStageById')->once()->with(10, 'publishing');
             $mock->shouldReceive('registerPublishedFeed')->once();
+            $mock->shouldReceive('isSyncJobFinalized')->andReturn(true);
         });
 
         $result = app(VarleFeedPublisher::class)->publish();
