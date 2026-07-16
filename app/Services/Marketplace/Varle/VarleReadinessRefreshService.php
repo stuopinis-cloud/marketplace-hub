@@ -115,6 +115,7 @@ class VarleReadinessRefreshService
         $success = 0;
         $failed = 0;
         $index = 0;
+        $cancelled = false;
 
         try {
             $this->productsQuery($productIds)
@@ -131,7 +132,21 @@ class VarleReadinessRefreshService
                     &$success,
                     &$failed,
                     &$index,
+                    &$cancelled,
                 ): void {
+                    if ($cancelled) {
+                        return;
+                    }
+
+                    $syncJob->refresh();
+
+                    if ($syncJob->cancel_requested_at !== null) {
+                        $this->markCancelled($syncJob, $success, $failed);
+                        $cancelled = true;
+
+                        return;
+                    }
+
                     foreach ($products as $product) {
                         $index++;
 
@@ -156,6 +171,12 @@ class VarleReadinessRefreshService
                     }
                 });
 
+            $syncJob->refresh();
+
+            if ($cancelled || $syncJob->status === SyncJobStatus::Cancelled) {
+                return;
+            }
+
             $status = $failed > 0 && $success === 0
                 ? SyncJobStatus::Failed
                 : ($failed > 0 ? SyncJobStatus::Partial : SyncJobStatus::Completed);
@@ -178,6 +199,22 @@ class VarleReadinessRefreshService
 
             throw $exception;
         }
+    }
+
+    private function markCancelled(SyncJob $syncJob, int $success = 0, int $failed = 0): void
+    {
+        $syncJob->update([
+            'status' => SyncJobStatus::Cancelled,
+            'cancelled_at' => now(),
+            'finished_at' => now(),
+            'heartbeat_at' => now(),
+            'success_items' => $success,
+            'failed_items' => $failed,
+            'error_message' => 'Cancelled by request.',
+            'context' => array_merge($syncJob->context ?? [], [
+                'stage' => 'cancelled',
+            ]),
+        ]);
     }
 
     private function markFailed(SyncJob $syncJob, string $message, int $success = 0, int $failed = 0): void

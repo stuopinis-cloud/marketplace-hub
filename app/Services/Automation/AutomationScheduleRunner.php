@@ -5,6 +5,7 @@ namespace App\Services\Automation;
 use App\Enums\SyncJobStatus;
 use App\Models\AutomationSchedule;
 use App\Models\SyncJob;
+use App\Services\Sync\MarketplaceJobDispatcher;
 use Carbon\Carbon;
 use Carbon\CarbonInterface;
 use Illuminate\Support\Facades\Date;
@@ -12,7 +13,7 @@ use Illuminate\Support\Facades\Date;
 class AutomationScheduleRunner
 {
     public function __construct(
-        private readonly DailyMarketplaceSync $dailyMarketplaceSync,
+        private readonly MarketplaceJobDispatcher $jobDispatcher,
     ) {}
 
     public function runDueSchedules(): void
@@ -81,9 +82,9 @@ class AutomationScheduleRunner
 
     private function runDailyMarketplaceSync(AutomationSchedule $schedule): AutomationScheduleRunResult
     {
-        $result = $this->dailyMarketplaceSync->run(
+        $result = $this->jobDispatcher->dispatchDailySync(
             runShopifyImport: $schedule->run_shopify_import,
-            runSupplierSync: (bool) $schedule->run_supplier_sync,
+            runSupplierSync: (bool) ($schedule->run_supplier_sync ?? true),
             runReadinessRefresh: true,
             runVarleExport: $schedule->run_varle_export,
             generateFailedCsv: $schedule->generate_failed_csv,
@@ -91,21 +92,22 @@ class AutomationScheduleRunner
 
         $schedule->last_run_at = now();
 
-        if ($result->successful) {
-            $schedule->last_status = 'success';
-            $schedule->last_error = null;
-            $schedule->next_run_at = $this->calculateNextRunAt($schedule, now());
+        if ($result->alreadyRunning) {
+            $schedule->last_status = 'blocked';
+            $schedule->last_error = $result->message;
             $schedule->save();
 
-            return AutomationScheduleRunResult::success($result->message);
+            return AutomationScheduleRunResult::blocked($result->message ?? 'Daily sync already running.');
         }
 
-        $schedule->last_status = 'failed';
-        $schedule->last_error = $result->message;
+        $schedule->last_status = 'queued';
+        $schedule->last_error = null;
         $schedule->next_run_at = $this->calculateNextRunAt($schedule, now());
         $schedule->save();
 
-        return AutomationScheduleRunResult::failed($result->message);
+        return AutomationScheduleRunResult::success(
+            $result->message ?? 'Daily marketplace sync queued.'.($result->syncJob ? ' Sync job #'.$result->syncJob->id.'.' : ''),
+        );
     }
 
     private function markBlocked(AutomationSchedule $schedule, string $reason): AutomationScheduleRunResult
@@ -137,6 +139,12 @@ class AutomationScheduleRunner
                     })
                     ->orWhere(function ($query): void {
                         $query->where('type', 'export')->where('channel', 'varle');
+                    })
+                    ->orWhere(function ($query): void {
+                        $query->where('type', 'daily_sync')->where('source', 'marketplace');
+                    })
+                    ->orWhere(function ($query): void {
+                        $query->where('type', 'readiness');
                     });
             })
             ->latest('id')
@@ -146,9 +154,13 @@ class AutomationScheduleRunner
             return null;
         }
 
-        $label = $runningJob->type === 'import'
-            ? 'Shopify import'
-            : 'Varle export';
+        $label = match (true) {
+            $runningJob->type === 'import' && $runningJob->source === 'shopify' => 'Shopify import',
+            $runningJob->type === 'export' => 'Varle export',
+            $runningJob->type === 'daily_sync' => 'Daily marketplace sync',
+            $runningJob->type === 'readiness' => 'Varle readiness refresh',
+            default => 'Marketplace sync',
+        };
 
         return "{$label} sync job #{$runningJob->id} is still running.";
     }

@@ -3,6 +3,7 @@
 namespace Tests\Feature\Console;
 
 use App\Console\MarketplaceScheduleRegistrar;
+use Illuminate\Console\Scheduling\CallbackEvent;
 use Illuminate\Console\Scheduling\Schedule;
 use Tests\TestCase;
 
@@ -19,7 +20,10 @@ class MarketplaceScheduleTest extends TestCase
         $schedule = new Schedule;
         MarketplaceScheduleRegistrar::register($schedule);
 
-        $dailySync = $this->findScheduledEvent($schedule, 'marketplace:daily-sync');
+        $dailySync = collect($schedule->events())->first(
+            fn ($event): bool => $event instanceof CallbackEvent
+                && $event->description === 'marketplace-daily-sync-dispatch',
+        );
 
         $this->assertNotNull($dailySync);
         $this->assertSame('0 3 * * *', $dailySync->expression);
@@ -34,7 +38,12 @@ class MarketplaceScheduleTest extends TestCase
         $schedule = new Schedule;
         MarketplaceScheduleRegistrar::register($schedule);
 
-        $this->assertNull($this->findScheduledEvent($schedule, 'marketplace:daily-sync'));
+        $dailySync = collect($schedule->events())->first(
+            fn ($event): bool => $event instanceof CallbackEvent
+                && $event->description === 'marketplace-daily-sync-dispatch',
+        );
+
+        $this->assertNull($dailySync);
     }
 
     public function test_schedule_contains_sync_detect_stuck_every_five_minutes(): void
@@ -44,7 +53,9 @@ class MarketplaceScheduleTest extends TestCase
         $schedule = new Schedule;
         MarketplaceScheduleRegistrar::register($schedule);
 
-        $detectStuck = $this->findScheduledEvent($schedule, 'sync:detect-stuck');
+        $detectStuck = collect($schedule->events())->first(
+            fn ($event): bool => str_contains((string) ($event->command ?? ''), 'sync:detect-stuck'),
+        );
 
         $this->assertNotNull($detectStuck);
         $this->assertSame('*/5 * * * *', $detectStuck->expression);
@@ -64,10 +75,21 @@ class MarketplaceScheduleTest extends TestCase
         $this->assertCount(0, $varleExports);
     }
 
-    private function findScheduledEvent(Schedule $schedule, string $command): ?object
+    public function test_schedule_dispatches_daily_sync_job_not_heavy_inline_work(): void
     {
-        return collect($schedule->events())->first(
-            fn ($event): bool => str_contains((string) ($event->command ?? ''), $command),
-        );
+        config([
+            'marketplace.daily_sync.enabled' => true,
+            'marketplace.daily_sync.time' => '03:00',
+        ]);
+
+        $schedule = new Schedule;
+        MarketplaceScheduleRegistrar::register($schedule);
+
+        $commands = collect($schedule->events())
+            ->map(fn ($event): string => (string) ($event->command ?? $event->description ?? ''))
+            ->implode(' ');
+
+        $this->assertStringNotContainsString('marketplace:daily-sync', $commands);
+        $this->assertStringContainsString('marketplace-daily-sync-dispatch', $commands);
     }
 }

@@ -2,10 +2,12 @@
 
 namespace Tests\Feature\Console;
 
+use App\Jobs\RunDailyMarketplaceSyncJob;
 use App\Models\AutomationSchedule;
 use App\Services\Automation\DailyMarketplaceSync;
 use App\Services\Automation\DailyMarketplaceSyncResult;
 use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Support\Facades\Bus;
 use Mockery\MockInterface;
 use Tests\TestCase;
 
@@ -13,7 +15,18 @@ class DailySyncCommandTest extends TestCase
 {
     use RefreshDatabase;
 
-    public function test_daily_sync_command_runs_enabled_steps(): void
+    public function test_daily_sync_command_queues_by_default(): void
+    {
+        Bus::fake();
+
+        $this->artisan('marketplace:daily-sync')
+            ->expectsOutputToContain('queued')
+            ->assertSuccessful();
+
+        Bus::assertDispatched(RunDailyMarketplaceSyncJob::class);
+    }
+
+    public function test_daily_sync_command_runs_enabled_steps_synchronously(): void
     {
         $this->mock(DailyMarketplaceSync::class, function (MockInterface $mock): void {
             $mock->shouldReceive('run')
@@ -35,7 +48,7 @@ class DailySyncCommandTest extends TestCase
                 ]));
         });
 
-        $this->artisan('marketplace:daily-sync')
+        $this->artisan('marketplace:daily-sync --sync')
             ->expectsOutputToContain('Starting daily marketplace sync')
             ->expectsOutputToContain('Shopify import')
             ->expectsOutputToContain('Varle export')
@@ -63,18 +76,16 @@ class DailySyncCommandTest extends TestCase
                 ->andReturn(DailyMarketplaceSyncResult::success());
         });
 
-        $this->artisan('marketplace:daily-sync --skip-import --skip-varle --skip-failed-csv')
+        $this->artisan('marketplace:daily-sync --sync --skip-import --skip-varle --skip-failed-csv')
             ->expectsOutputToContain('Shopify import: skipped')
             ->expectsOutputToContain('Varle export: skipped')
             ->expectsOutputToContain('Failed CSV: skipped')
             ->assertSuccessful();
     }
 
-    public function test_run_due_schedules_command_processes_due_schedules(): void
+    public function test_run_due_schedules_command_queues_due_schedules(): void
     {
-        $this->mock(DailyMarketplaceSync::class, function (MockInterface $mock): void {
-            $mock->shouldReceive('run')->once()->andReturn(DailyMarketplaceSyncResult::success());
-        });
+        Bus::fake();
 
         AutomationSchedule::query()->create([
             'name' => 'Due schedule',
@@ -92,5 +103,7 @@ class DailySyncCommandTest extends TestCase
         $this->artisan('marketplace:run-due-schedules')
             ->expectsOutputToContain('Due automation schedules processed')
             ->assertSuccessful();
+
+        Bus::assertDispatched(RunDailyMarketplaceSyncJob::class);
     }
 }

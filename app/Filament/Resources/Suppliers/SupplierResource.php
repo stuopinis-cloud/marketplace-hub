@@ -7,8 +7,6 @@ use App\Filament\Resources\Suppliers\Pages\EditSupplier;
 use App\Filament\Resources\Suppliers\Pages\ListSuppliers;
 use App\Models\Supplier;
 use App\Services\Suppliers\SupplierConnectionTester;
-use App\Services\Suppliers\SupplierSyncManager;
-use App\Services\Suppliers\SupplierSyncOptions;
 use BackedEnum;
 use Filament\Actions\Action;
 use Filament\Actions\EditAction;
@@ -209,12 +207,24 @@ class SupplierResource extends Resource
                             return;
                         }
 
-                        try {
-                            app(SupplierSyncManager::class)->sync((string) $record->code);
-                            Notification::make()->title('Supplier sync finished')->success()->send();
-                        } catch (\Throwable $exception) {
-                            Notification::make()->title('Supplier sync failed')->body($exception->getMessage())->danger()->send();
+                        $result = app(\App\Services\Sync\MarketplaceJobDispatcher::class)
+                            ->dispatchSupplierSync((string) $record->code);
+
+                        if ($result->alreadyRunning) {
+                            Notification::make()
+                                ->title('Job already running')
+                                ->body($result->message)
+                                ->warning()
+                                ->send();
+
+                            return;
                         }
+
+                        Notification::make()
+                            ->title('Supplier sync queued')
+                            ->body($result->message ?? 'Job started in background.')
+                            ->success()
+                            ->send();
                     }),
                 Action::make('dryRun')
                     ->label('Dry run')
@@ -223,12 +233,24 @@ class SupplierResource extends Resource
                             return;
                         }
 
-                        try {
-                            app(SupplierSyncManager::class)->sync((string) $record->code, new SupplierSyncOptions(dryRun: true));
-                            Notification::make()->title('Dry run finished')->success()->send();
-                        } catch (\Throwable $exception) {
-                            Notification::make()->title('Dry run failed')->body($exception->getMessage())->danger()->send();
+                        $result = app(\App\Services\Sync\MarketplaceJobDispatcher::class)
+                            ->dispatchSupplierSync((string) $record->code, dryRun: true);
+
+                        if ($result->alreadyRunning) {
+                            Notification::make()
+                                ->title('Job already running')
+                                ->body($result->message)
+                                ->warning()
+                                ->send();
+
+                            return;
                         }
+
+                        Notification::make()
+                            ->title('Dry run queued')
+                            ->body($result->message ?? 'Job started in background.')
+                            ->success()
+                            ->send();
                     }),
                 Action::make('testConnection')
                     ->label('Test connection')

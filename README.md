@@ -303,14 +303,49 @@ Certbot updates Nginx for HTTPS and auto-renewal. Verify:
 sudo certbot renew --dry-run
 ```
 
-#### 9. Queue worker (Supervisor)
+#### 9. Queue worker (systemd — recommended)
+
+Long-running imports/exports must never run inside PHP-FPM/Livewire. Use a persistent queue worker:
+
+```bash
+php artisan queue:work database --sleep=3 --tries=1 --timeout=7200 --memory=512
+```
+
+Create `/etc/systemd/system/marketplace-hub-queue.service`:
+
+```ini
+[Unit]
+Description=Marketplace Hub queue worker
+After=network.target
+
+[Service]
+User=www-data
+Group=www-data
+Restart=always
+RestartSec=3
+WorkingDirectory=/var/www/marketplace-hub
+ExecStart=/usr/bin/php /var/www/marketplace-hub/artisan queue:work database --sleep=3 --tries=1 --timeout=7200 --memory=512
+KillMode=process
+TimeoutStopSec=7300
+
+[Install]
+WantedBy=multi-user.target
+```
+
+```bash
+sudo systemctl daemon-reload
+sudo systemctl enable --now marketplace-hub-queue
+sudo systemctl status marketplace-hub-queue
+```
+
+#### 9b. Queue worker (Supervisor alternative)
 
 Create `/etc/supervisor/conf.d/marketplace-hub-worker.conf`:
 
 ```ini
 [program:marketplace-hub-worker]
 process_name=%(program_name)s_%(process_num)02d
-command=php /var/www/marketplace-hub/artisan queue:work database --sleep=3 --tries=3 --max-time=3600
+command=php /var/www/marketplace-hub/artisan queue:work database --sleep=3 --tries=1 --timeout=7200 --memory=512
 autostart=true
 autorestart=true
 stopasgroup=true
@@ -319,7 +354,7 @@ user=www-data
 numprocs=1
 redirect_stderr=true
 stdout_logfile=/var/www/marketplace-hub/storage/logs/worker.log
-stopwaitsecs=3600
+stopwaitsecs=7300
 ```
 
 ```bash

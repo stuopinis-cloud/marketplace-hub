@@ -114,22 +114,25 @@ class EditSupplier extends EditRecord
             return;
         }
 
-        try {
-            app(\App\Services\Suppliers\SupplierSyncManager::class)->sync(
-                (string) $record->code,
-                new \App\Services\Suppliers\SupplierSyncOptions(dryRun: $dryRun),
-            );
+        $result = app(\App\Services\Sync\MarketplaceJobDispatcher::class)->dispatchSupplierSync(
+            (string) $record->code,
+            $dryRun,
+        );
 
+        if ($result->alreadyRunning) {
             \Filament\Notifications\Notification::make()
-                ->title($dryRun ? 'Dry run finished' : 'Supplier sync finished')
-                ->success()
+                ->title('Job already running')
+                ->body($result->message)
+                ->warning()
                 ->send();
-        } catch (\Throwable $exception) {
-            \Filament\Notifications\Notification::make()
-                ->title($dryRun ? 'Dry run failed' : 'Supplier sync failed')
-                ->body($exception->getMessage())
-                ->danger()
-                ->send();
+
+            return;
         }
+
+        \Filament\Notifications\Notification::make()
+            ->title($dryRun ? 'Dry run queued' : 'Supplier sync queued')
+            ->body($result->message ?? 'Job started in background.')
+            ->success()
+            ->send();
     }
 }

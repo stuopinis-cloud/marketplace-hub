@@ -2,6 +2,7 @@
 
 namespace App\Console;
 
+use App\Services\Sync\MarketplaceJobDispatcher;
 use Illuminate\Console\Scheduling\Event;
 use Illuminate\Console\Scheduling\Schedule;
 
@@ -11,7 +12,10 @@ class MarketplaceScheduleRegistrar
     {
         if (config('marketplace.daily_sync.enabled', true)) {
             $dailySync = $schedule
-                ->command('marketplace:daily-sync')
+                ->call(function (): void {
+                    app(MarketplaceJobDispatcher::class)->dispatchDailySync();
+                })
+                ->name('marketplace-daily-sync-dispatch')
                 ->dailyAt((string) config('marketplace.daily_sync.time', '03:00'))
                 ->timezone((string) config('marketplace.daily_sync.timezone', 'Europe/Vilnius'))
                 ->withoutOverlapping();

@@ -13,14 +13,14 @@ use App\Filament\Pages\VarleReadiness\Widgets\VarleReadinessSummaryWidget;
 use App\Filament\Pages\VarleReadiness\Widgets\VarleRecentProblemsWidget;
 use App\Filament\Resources\Products\ProductResource;
 use App\Services\Marketplace\Varle\VarleReadinessMetrics;
-use App\Services\Marketplace\Varle\VarleReadinessRefreshService;
+use App\Services\Sync\JobDispatchResult;
+use App\Services\Sync\MarketplaceJobDispatcher;
 use App\Services\Sync\SyncJobFailedCsvExporter;
 use BackedEnum;
 use Filament\Actions\Action;
 use Filament\Notifications\Notification;
 use Filament\Pages\Page;
 use Filament\Support\Icons\Heroicon;
-use Illuminate\Support\Facades\Artisan;
 use UnitEnum;
 
 class VarleReadiness extends Page
@@ -45,27 +45,31 @@ class VarleReadiness extends Page
                 ->label('Run Shopify import')
                 ->icon(Heroicon::OutlinedArrowDownTray)
                 ->requiresConfirmation()
-                ->action(function (): void {
-                    Artisan::call('shopify:import-products');
-
-                    Notification::make()
-                        ->title('Shopify import completed')
-                        ->body(trim(Artisan::output()) ?: 'Import finished.')
-                        ->success()
-                        ->send();
+                ->action(function (MarketplaceJobDispatcher $dispatcher): void {
+                    $this->notifyDispatchResult(
+                        $dispatcher->dispatchShopifyImport(),
+                        'Shopify import queued',
+                    );
                 }),
             Action::make('runVarleExport')
                 ->label('Run Varle export')
                 ->icon(Heroicon::OutlinedDocumentArrowUp)
                 ->requiresConfirmation()
-                ->action(function (): void {
-                    Artisan::call('varle:export-xml');
-
-                    Notification::make()
-                        ->title('Varle export completed')
-                        ->body(trim(Artisan::output()) ?: 'Export finished.')
-                        ->success()
-                        ->send();
+                ->action(function (MarketplaceJobDispatcher $dispatcher): void {
+                    $this->notifyDispatchResult(
+                        $dispatcher->dispatchVarleExport(),
+                        'Varle export queued',
+                    );
+                }),
+            Action::make('runDailySync')
+                ->label('Run daily sync')
+                ->icon(Heroicon::OutlinedPlay)
+                ->requiresConfirmation()
+                ->action(function (MarketplaceJobDispatcher $dispatcher): void {
+                    $this->notifyDispatchResult(
+                        $dispatcher->dispatchDailySync(),
+                        'Daily marketplace sync queued',
+                    );
                 }),
             Action::make('downloadFailedCsv')
                 ->label('Download latest failed CSV')
@@ -87,24 +91,11 @@ class VarleReadiness extends Page
                 ->label('Refresh readiness cache')
                 ->icon(Heroicon::OutlinedArrowPath)
                 ->requiresConfirmation()
-                ->action(function (): void {
-                    $result = app(VarleReadinessRefreshService::class)->dispatch();
-
-                    if ($result->alreadyRunning) {
-                        Notification::make()
-                            ->title('Readiness refresh already running')
-                            ->body($result->message ?? 'A Varle readiness refresh is already running.')
-                            ->warning()
-                            ->send();
-
-                        return;
-                    }
-
-                    Notification::make()
-                        ->title('Varle readiness refresh started in background.')
-                        ->body('Sync job #'.$result->syncJob?->id.' is processing products in the queue.')
-                        ->success()
-                        ->send();
+                ->action(function (MarketplaceJobDispatcher $dispatcher): void {
+                    $this->notifyDispatchResult(
+                        $dispatcher->dispatchReadinessRefresh(),
+                        'Varle readiness refresh queued',
+                    );
                 }),
             Action::make('reviewPendingProducts')
                 ->label('Review pending products')
@@ -148,5 +139,30 @@ class VarleReadiness extends Page
     public function getFooterWidgetsColumns(): int|array
     {
         return 1;
+    }
+
+    private function notifyDispatchResult(JobDispatchResult $result, string $queuedTitle): void
+    {
+        if ($result->alreadyRunning) {
+            Notification::make()
+                ->title('Job already running')
+                ->body($result->message ?? 'Another job is already running.')
+                ->warning()
+                ->send();
+
+            return;
+        }
+
+        $body = $result->message ?? 'Job started in background.';
+
+        if ($result->syncJob !== null) {
+            $body .= ' Sync job #'.$result->syncJob->id.'.';
+        }
+
+        Notification::make()
+            ->title($queuedTitle)
+            ->body($body)
+            ->success()
+            ->send();
     }
 }

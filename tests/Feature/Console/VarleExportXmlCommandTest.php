@@ -2,9 +2,8 @@
 
 namespace Tests\Feature\Console;
 
-use App\Jobs\ExportVarleXmlJob;
+use App\Jobs\GenerateVarleXmlJob;
 use App\Models\SyncJob;
-use App\Services\Marketplace\Varle\VarleXmlExporter;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\Bus;
 use Illuminate\Support\Facades\Storage;
@@ -41,9 +40,9 @@ class VarleExportXmlCommandTest extends TestCase
         Bus::fake();
 
         $this->artisan('varle:export-xml --queue')
-            ->expectsOutputToContain('dispatched to the queue')
+            ->expectsOutputToContain('queued')
             ->assertSuccessful();
 
-        Bus::assertDispatched(ExportVarleXmlJob::class);
+        Bus::assertDispatched(GenerateVarleXmlJob::class);
     }
 }

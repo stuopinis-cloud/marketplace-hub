@@ -10,6 +10,7 @@ class StuckSyncJobMarker
 {
     public function __construct(
         private readonly SyncJobHealthService $healthService,
+        private readonly SyncJobProcessInspector $processInspector,
     ) {}
 
     public function markStuckJobs(?string $source = null): int
@@ -30,23 +31,7 @@ class StuckSyncJobMarker
                 return;
             }
 
-            $job->update([
-                'status' => SyncJobStatus::Failed,
-                'finished_at' => now(),
-                'heartbeat_at' => now(),
-                'error_message' => sprintf(
-                    'Marked failed automatically because heartbeat was stale for more than %d minutes.',
-                    $staleMinutes,
-                ),
-                'context' => array_merge($job->context ?? [], [
-                    'stuck_detected_at' => now()->toIso8601String(),
-                    'stuck_reason' => 'heartbeat_stale',
-                    'last_known_stage' => data_get($job->context, 'stage'),
-                    'last_known_product_handle' => data_get($job->context, 'current_product_handle'),
-                    'last_activity_at' => $this->healthService->lastActivityAt($job)?->toIso8601String(),
-                ]),
-            ]);
-
+            $this->markJobStuck($job, $staleMinutes);
             $marked++;
         });
 
@@ -67,8 +52,19 @@ class StuckSyncJobMarker
             return false;
         }
 
-        $staleMinutes = $this->healthService->stuckAfterMinutes();
+        $this->markJobStuck($job, $this->healthService->stuckAfterMinutes());
 
+        Log::warning('Marked stuck sync job as failed', [
+            'sync_job_id' => $job->id,
+            'source' => $job->source,
+            'stale_minutes' => $this->healthService->stuckAfterMinutes(),
+        ]);
+
+        return true;
+    }
+
+    private function markJobStuck(SyncJob $job, int $staleMinutes): void
+    {
         $job->update([
             'status' => SyncJobStatus::Failed,
             'finished_at' => now(),
@@ -86,12 +82,21 @@ class StuckSyncJobMarker
             ]),
         ]);
 
-        Log::warning('Marked stuck sync job as failed', [
-            'sync_job_id' => $job->id,
-            'source' => $job->source,
-            'stale_minutes' => $staleMinutes,
-        ]);
+        $this->releaseStaleLock($job);
+    }
 
-        return true;
+    private function releaseStaleLock(SyncJob $job): void
+    {
+        $lockKey = MarketplaceJobLock::keyForSyncJob($job);
+
+        if ($lockKey === null) {
+            return;
+        }
+
+        if ($job->process_id !== null && $this->processInspector->isProcessRunning($job->process_id)) {
+            return;
+        }
+
+        MarketplaceJobLock::forceRelease($lockKey);
     }
 }

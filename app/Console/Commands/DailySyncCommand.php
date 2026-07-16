@@ -3,20 +3,22 @@
 namespace App\Console\Commands;
 
 use App\Services\Automation\DailyMarketplaceSync;
+use App\Services\Sync\MarketplaceJobDispatcher;
 use Illuminate\Console\Command;
 
 class DailySyncCommand extends Command
 {
     protected $signature = 'marketplace:daily-sync
+                            {--sync : Run synchronously in this process (not for production cron)}
                             {--skip-import : Skip Shopify import}
                             {--skip-supplier : Skip enabled supplier syncs}
                             {--skip-readiness : Skip Varle readiness refresh}
                             {--skip-varle : Skip Varle XML export}
                             {--skip-failed-csv : Skip failed CSV export}';
 
-    protected $description = 'Run the daily Shopify import, supplier sync, readiness refresh, and Varle XML export workflow';
+    protected $description = 'Queue (or optionally run) the daily Shopify import, supplier sync, readiness refresh, and Varle XML export workflow';
 
-    public function handle(DailyMarketplaceSync $dailySync): int
+    public function handle(MarketplaceJobDispatcher $dispatcher, DailyMarketplaceSync $dailySync): int
     {
         $runShopifyImport = ! $this->option('skip-import');
         $runSupplierSync = ! $this->option('skip-supplier');
@@ -24,7 +26,31 @@ class DailySyncCommand extends Command
         $runVarleExport = ! $this->option('skip-varle');
         $generateFailedCsv = ! $this->option('skip-failed-csv');
 
-        $this->components->info('Starting daily marketplace sync...');
+        if (! $this->option('sync')) {
+            $result = $dispatcher->dispatchDailySync(
+                runShopifyImport: $runShopifyImport,
+                runSupplierSync: $runSupplierSync,
+                runReadinessRefresh: $runReadinessRefresh,
+                runVarleExport: $runVarleExport,
+                generateFailedCsv: $generateFailedCsv,
+            );
+
+            if ($result->alreadyRunning) {
+                $this->components->warn($result->message ?? 'Daily marketplace sync is already running.');
+
+                return self::SUCCESS;
+            }
+
+            $this->components->info($result->message ?? 'Daily marketplace sync queued.');
+
+            if ($result->syncJob !== null) {
+                $this->line('Sync job ID: '.$result->syncJob->id);
+            }
+
+            return self::SUCCESS;
+        }
+
+        $this->components->info('Starting daily marketplace sync synchronously...');
         $this->line('Shopify import: '.($runShopifyImport ? 'enabled' : 'skipped'));
         $this->line('Supplier sync: '.($runSupplierSync ? 'enabled' : 'skipped'));
         $this->line('Readiness refresh: '.($runReadinessRefresh ? 'enabled' : 'skipped'));

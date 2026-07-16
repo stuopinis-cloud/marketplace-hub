@@ -3,7 +3,7 @@
 namespace App\Filament\Resources\AutomationSchedules\Actions;
 
 use App\Models\AutomationSchedule;
-use App\Services\Automation\AutomationScheduleRunner;
+use App\Services\Sync\MarketplaceJobDispatcher;
 use Filament\Actions\Action;
 use Filament\Notifications\Notification;
 use Filament\Support\Icons\Heroicon;
@@ -16,34 +16,34 @@ class RunNowAction
             ->label('Run now')
             ->icon(Heroicon::OutlinedPlay)
             ->requiresConfirmation()
-            ->action(function (AutomationSchedule $record, AutomationScheduleRunner $runner): void {
-                $result = $runner->runSchedule($record);
-                $record->refresh();
+            ->action(function (AutomationSchedule $record, MarketplaceJobDispatcher $dispatcher): void {
+                $result = $dispatcher->dispatchDailySync(
+                    runShopifyImport: (bool) $record->run_shopify_import,
+                    runSupplierSync: (bool) ($record->run_supplier_sync ?? true),
+                    runReadinessRefresh: true,
+                    runVarleExport: (bool) $record->run_varle_export,
+                    generateFailedCsv: (bool) $record->generate_failed_csv,
+                );
 
-                if ($result->status === 'success') {
+                if ($result->alreadyRunning) {
                     Notification::make()
-                        ->title('Schedule ran successfully')
-                        ->body($result->message ?? 'Daily marketplace sync completed.')
-                        ->success()
+                        ->title('Job already running')
+                        ->body($result->message ?? 'Daily marketplace sync is already running.')
+                        ->warning()
                         ->send();
 
                     return;
                 }
 
-                if ($result->status === 'failed') {
-                    Notification::make()
-                        ->title('Schedule run failed')
-                        ->body($result->message ?? 'The schedule run failed.')
-                        ->danger()
-                        ->send();
-
-                    return;
-                }
+                $record->update([
+                    'last_status' => 'queued',
+                    'last_error' => null,
+                ]);
 
                 Notification::make()
-                    ->title('Schedule was not run')
-                    ->body($result->message ?? 'The schedule was '.$result->status.'.')
-                    ->warning()
+                    ->title('Daily sync queued')
+                    ->body(($result->message ?? 'Job started in background.').($result->syncJob ? ' Sync job #'.$result->syncJob->id.'.' : ''))
+                    ->success()
                     ->send();
             });
     }

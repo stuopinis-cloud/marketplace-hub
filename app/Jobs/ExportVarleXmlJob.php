@@ -2,16 +2,9 @@
 
 namespace App\Jobs;
 
-use App\Services\Marketplace\Varle\VarleFeedPublisher;
-use Illuminate\Contracts\Queue\ShouldQueue;
-use Illuminate\Foundation\Queue\Queueable;
-
-class ExportVarleXmlJob implements ShouldQueue
+/**
+ * @deprecated Use GenerateVarleXmlJob. Kept for backward compatibility with queued payloads.
+ */
+class ExportVarleXmlJob extends GenerateVarleXmlJob
 {
-    use Queueable;
-
-    public function handle(VarleFeedPublisher $publisher): void
-    {
-        $publisher->publish();
-    }
 }

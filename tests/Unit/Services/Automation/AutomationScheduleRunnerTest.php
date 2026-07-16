@@ -3,14 +3,13 @@
 namespace Tests\Unit\Services\Automation;
 
 use App\Enums\SyncJobStatus;
+use App\Jobs\RunDailyMarketplaceSyncJob;
 use App\Models\AutomationSchedule;
 use App\Models\SyncJob;
 use App\Services\Automation\AutomationScheduleRunner;
-use App\Services\Automation\DailyMarketplaceSync;
-use App\Services\Automation\DailyMarketplaceSyncResult;
 use Carbon\Carbon;
 use Illuminate\Foundation\Testing\RefreshDatabase;
-use Mockery\MockInterface;
+use Illuminate\Support\Facades\Bus;
 use Tests\TestCase;
 
 class AutomationScheduleRunnerTest extends TestCase
@@ -26,9 +25,7 @@ class AutomationScheduleRunnerTest extends TestCase
 
     public function test_disabled_schedule_does_not_run_via_due_query(): void
     {
-        $this->mock(DailyMarketplaceSync::class, function (MockInterface $mock): void {
-            $mock->shouldNotReceive('run');
-        });
+        Bus::fake();
 
         $this->createSchedule([
             'enabled' => false,
@@ -37,6 +34,7 @@ class AutomationScheduleRunnerTest extends TestCase
 
         app(AutomationScheduleRunner::class)->runDueSchedules();
 
+        Bus::assertNotDispatched(RunDailyMarketplaceSyncJob::class);
         $this->assertDatabaseHas('automation_schedules', [
             'last_status' => null,
         ]);
@@ -56,28 +54,10 @@ class AutomationScheduleRunnerTest extends TestCase
         $this->assertSame('skipped', $schedule->last_status);
     }
 
-    public function test_enabled_due_schedule_runs_and_updates_timestamps(): void
+    public function test_enabled_due_schedule_queues_daily_sync(): void
     {
+        Bus::fake();
         Carbon::setTestNow(Carbon::parse('2026-07-01 04:00:00', 'Europe/Vilnius'));
-
-        $this->mock(DailyMarketplaceSync::class, function (MockInterface $mock): void {
-            $mock->shouldReceive('run')
-                ->once()
-                ->withArgs(function (
-                    bool $runShopifyImport,
-                    bool $runSupplierSync,
-                    bool $runReadinessRefresh,
-                    bool $runVarleExport,
-                    bool $generateFailedCsv,
-                ): bool {
-                    return $runShopifyImport === true
-                        && $runSupplierSync === false
-                        && $runReadinessRefresh === true
-                        && $runVarleExport === true
-                        && $generateFailedCsv === true;
-                })
-                ->andReturn(DailyMarketplaceSyncResult::success());
-        });
 
         $schedule = $this->createSchedule([
             'next_run_at' => now()->subMinute(),
@@ -87,18 +67,17 @@ class AutomationScheduleRunnerTest extends TestCase
         $schedule->refresh();
 
         $this->assertSame('success', $result->status);
+        $this->assertSame('queued', $schedule->last_status);
         $this->assertNotNull($schedule->last_run_at);
-        $this->assertSame('success', $schedule->last_status);
         $this->assertNull($schedule->last_error);
         $this->assertNotNull($schedule->next_run_at);
         $this->assertTrue($schedule->next_run_at->greaterThan(now()));
+        Bus::assertDispatched(RunDailyMarketplaceSyncJob::class);
     }
 
     public function test_schedule_not_due_does_not_run(): void
     {
-        $this->mock(DailyMarketplaceSync::class, function (MockInterface $mock): void {
-            $mock->shouldNotReceive('run');
-        });
+        Bus::fake();
 
         $schedule = $this->createSchedule([
             'next_run_at' => now()->addHour(),
@@ -108,6 +87,7 @@ class AutomationScheduleRunnerTest extends TestCase
 
         $this->assertSame('skipped', $result->status);
         $this->assertStringContainsString('not due', (string) $result->message);
+        Bus::assertNotDispatched(RunDailyMarketplaceSyncJob::class);
     }
 
     public function test_next_run_at_is_calculated_from_run_time_and_timezone(): void
@@ -129,16 +109,14 @@ class AutomationScheduleRunnerTest extends TestCase
 
     public function test_running_sync_job_blocks_schedule(): void
     {
+        Bus::fake();
+
         SyncJob::query()->create([
             'type' => 'import',
             'source' => 'shopify',
             'status' => SyncJobStatus::Running,
             'started_at' => now(),
         ]);
-
-        $this->mock(DailyMarketplaceSync::class, function (MockInterface $mock): void {
-            $mock->shouldNotReceive('run');
-        });
 
         $schedule = $this->createSchedule([
             'next_run_at' => now()->subMinute(),
@@ -150,17 +128,19 @@ class AutomationScheduleRunnerTest extends TestCase
         $this->assertSame('blocked', $result->status);
         $this->assertSame('blocked', $schedule->last_status);
         $this->assertStringContainsString('still running', (string) $schedule->last_error);
+        Bus::assertNotDispatched(RunDailyMarketplaceSyncJob::class);
     }
 
-    public function test_failed_run_stores_last_error_and_next_run_at(): void
+    public function test_already_running_daily_sync_blocks_schedule(): void
     {
-        Carbon::setTestNow(Carbon::parse('2026-07-01 04:00:00', 'Europe/Vilnius'));
+        Bus::fake();
 
-        $this->mock(DailyMarketplaceSync::class, function (MockInterface $mock): void {
-            $mock->shouldReceive('run')
-                ->once()
-                ->andReturn(DailyMarketplaceSyncResult::failed('Varle export failed hard.'));
-        });
+        SyncJob::query()->create([
+            'type' => 'daily_sync',
+            'source' => 'marketplace',
+            'status' => SyncJobStatus::Running,
+            'started_at' => now(),
+        ]);
 
         $schedule = $this->createSchedule([
             'next_run_at' => now()->subMinute(),
@@ -169,18 +149,13 @@ class AutomationScheduleRunnerTest extends TestCase
         $result = app(AutomationScheduleRunner::class)->runSchedule($schedule);
         $schedule->refresh();
 
-        $this->assertSame('failed', $result->status);
-        $this->assertSame('failed', $schedule->last_status);
-        $this->assertSame('Varle export failed hard.', $schedule->last_error);
-        $this->assertNotNull($schedule->next_run_at);
-        $this->assertTrue($schedule->next_run_at->greaterThan(now()));
+        $this->assertSame('blocked', $result->status);
+        Bus::assertNotDispatched(RunDailyMarketplaceSyncJob::class);
     }
 
     public function test_run_due_schedules_processes_due_enabled_schedules(): void
     {
-        $this->mock(DailyMarketplaceSync::class, function (MockInterface $mock): void {
-            $mock->shouldReceive('run')->once()->andReturn(DailyMarketplaceSyncResult::success());
-        });
+        Bus::fake();
 
         $schedule = $this->createSchedule([
             'next_run_at' => now()->subMinute(),
@@ -189,7 +164,8 @@ class AutomationScheduleRunnerTest extends TestCase
         app(AutomationScheduleRunner::class)->runDueSchedules();
 
         $schedule->refresh();
-        $this->assertSame('success', $schedule->last_status);
+        $this->assertSame('queued', $schedule->last_status);
+        Bus::assertDispatched(RunDailyMarketplaceSyncJob::class);
     }
 
     /**
