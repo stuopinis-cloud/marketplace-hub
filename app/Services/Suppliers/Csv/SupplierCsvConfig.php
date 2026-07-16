@@ -18,14 +18,26 @@ class SupplierCsvConfig
         };
     }
 
-    public static function enclosure(Supplier $supplier): string
+    public static function enclosure(Supplier $supplier): ?string
     {
-        return (string) self::get($supplier, 'csv_enclosure', '"');
+        $value = self::get($supplier, 'csv_enclosure', '"');
+
+        if ($value === null) {
+            return null;
+        }
+
+        return (string) $value;
     }
 
-    public static function escape(Supplier $supplier): string
+    public static function escape(Supplier $supplier): ?string
     {
-        return (string) self::get($supplier, 'csv_escape', '\\');
+        $value = self::get($supplier, 'csv_escape', '\\');
+
+        if ($value === null) {
+            return null;
+        }
+
+        return (string) $value;
     }
 
     public static function hasHeader(Supplier $supplier): bool

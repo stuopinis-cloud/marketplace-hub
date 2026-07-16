@@ -3,10 +3,16 @@
 namespace App\Services\Suppliers\Csv;
 
 use App\Models\Supplier;
-use RuntimeException;
+use Throwable;
 
 class SupplierCsvParser
 {
+    public const string DEFAULT_DELIMITER = ',';
+
+    public const string DEFAULT_ENCLOSURE = '"';
+
+    public const string DEFAULT_ESCAPE = '\\';
+
     public function __construct(
         private readonly SupplierCsvStockResolver $stockResolver = new SupplierCsvStockResolver,
     ) {}
@@ -27,22 +33,55 @@ class SupplierCsvParser
      */
     public function parse(string $content, Supplier $supplier, ?int $maxRows = null): array
     {
+        try {
+            return $this->parseInternal($content, $supplier, $maxRows);
+        } catch (SupplierCsvParseException $exception) {
+            throw $exception;
+        } catch (Throwable $exception) {
+            throw new SupplierCsvParseException(
+                'CSV parse failed: '.$exception->getMessage(),
+                0,
+                $exception,
+            );
+        }
+    }
+
+    /**
+     * @return array{
+     *     entries: array<int, array{
+     *         sku: string,
+     *         stock_quantity: ?int,
+     *         availability_status: string,
+     *         raw_payload: array<string, mixed>
+     *     }>,
+     *     skipped: array<int, array<string, mixed>>,
+     *     headers: array<int, string>,
+     *     preview_rows: array<int, array<string, mixed>>,
+     *     detected_delimiter: string
+     * }
+     */
+    private function parseInternal(string $content, Supplier $supplier, ?int $maxRows = null): array
+    {
         $skuColumn = SupplierCsvConfig::skuColumn($supplier);
 
         if ($skuColumn === null) {
-            throw new RuntimeException('CSV SKU column mapping is required.');
+            throw new SupplierCsvParseException('CSV SKU column mapping is required.');
         }
 
         $content = $this->normalizeEncoding($content, SupplierCsvConfig::encoding($supplier));
         $lines = $this->splitLines($content);
 
         if ($lines === []) {
-            throw new RuntimeException('CSV feed is empty.');
+            throw new SupplierCsvParseException('CSV feed is empty.');
         }
 
-        $delimiter = $this->resolveDelimiter($supplier, $lines);
-        $enclosure = SupplierCsvConfig::enclosure($supplier);
-        $escape = SupplierCsvConfig::escape($supplier);
+        $detectedDelimiter = $this->detectDelimiter($lines);
+        $delimiter = $this->normalizeDelimiter(
+            $this->configuredDelimiterValue($supplier),
+            $detectedDelimiter,
+        );
+        $enclosure = $this->normalizeEnclosure(SupplierCsvConfig::enclosure($supplier));
+        $escape = $this->normalizeEscape(SupplierCsvConfig::escape($supplier));
         $hasHeader = SupplierCsvConfig::hasHeader($supplier);
         $dataStartRow = SupplierCsvConfig::dataStartRow($supplier);
 
@@ -128,7 +167,7 @@ class SupplierCsvParser
         }
 
         if ($entries === [] && $skipped === [] && $previewRows === []) {
-            throw new RuntimeException('CSV feed did not contain any data rows.');
+            throw new SupplierCsvParseException('CSV feed did not contain any data rows.');
         }
 
         return [
@@ -138,6 +177,61 @@ class SupplierCsvParser
             'preview_rows' => $previewRows,
             'detected_delimiter' => $delimiter,
         ];
+    }
+
+    public function normalizeDelimiter(?string $value, string $detected): string
+    {
+        $detected = $this->isSingleCharacter($detected) ? $detected : self::DEFAULT_DELIMITER;
+
+        if ($value === null) {
+            return $detected;
+        }
+
+        $trimmed = trim($value);
+
+        if ($trimmed === '' || strcasecmp($trimmed, 'auto') === 0) {
+            return $detected;
+        }
+
+        $mapped = match (strtolower($trimmed)) {
+            'comma' => ',',
+            'semicolon' => ';',
+            'tab' => "\t",
+            'pipe' => '|',
+            default => $trimmed,
+        };
+
+        return $this->isSingleCharacter($mapped) ? $mapped : $detected;
+    }
+
+    public function normalizeEnclosure(?string $value): string
+    {
+        if ($value === null) {
+            return self::DEFAULT_ENCLOSURE;
+        }
+
+        $trimmed = trim($value);
+
+        if ($trimmed === '' || strcasecmp($trimmed, 'auto') === 0 || ! $this->isSingleCharacter($trimmed)) {
+            return self::DEFAULT_ENCLOSURE;
+        }
+
+        return $trimmed;
+    }
+
+    public function normalizeEscape(?string $value): string
+    {
+        if ($value === null) {
+            return self::DEFAULT_ESCAPE;
+        }
+
+        $trimmed = trim($value);
+
+        if ($trimmed === '' || strcasecmp($trimmed, 'auto') === 0 || ! $this->isSingleCharacter($trimmed)) {
+            return self::DEFAULT_ESCAPE;
+        }
+
+        return $trimmed;
     }
 
     /**
@@ -160,21 +254,23 @@ class SupplierCsvParser
         arsort($candidates);
         $best = array_key_first($candidates);
 
-        return ($best !== null && ($candidates[$best] ?? 0) > 0) ? $best : ',';
+        return ($best !== null && ($candidates[$best] ?? 0) > 0) ? $best : self::DEFAULT_DELIMITER;
     }
 
-    /**
-     * @param  array<int, string>  $lines
-     */
-    private function resolveDelimiter(Supplier $supplier, array $lines): string
+    private function configuredDelimiterValue(Supplier $supplier): ?string
     {
-        $configured = (string) SupplierCsvConfig::get($supplier, 'csv_delimiter', 'comma');
+        $value = SupplierCsvConfig::get($supplier, 'csv_delimiter');
 
-        if ($configured === 'auto') {
-            return $this->detectDelimiter($lines);
+        if ($value === null) {
+            return null;
         }
 
-        return SupplierCsvConfig::delimiterChar($supplier);
+        return (string) $value;
+    }
+
+    private function isSingleCharacter(string $value): bool
+    {
+        return $value !== '' && mb_strlen($value) === 1;
     }
 
     /**

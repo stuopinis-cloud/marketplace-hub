@@ -3,6 +3,7 @@
 namespace Tests\Unit\Services\Suppliers\Csv;
 
 use App\Models\Supplier;
+use App\Services\Suppliers\Csv\SupplierCsvParseException;
 use App\Services\Suppliers\Csv\SupplierCsvParser;
 use Tests\TestCase;
 
@@ -108,7 +109,7 @@ class SupplierCsvParserTest extends TestCase
     {
         $supplier = $this->makeSupplier([]);
 
-        $this->expectException(\RuntimeException::class);
+        $this->expectException(SupplierCsvParseException::class);
         $this->parser()->parse("sku,qty\nA,1\n", $supplier);
     }
 
@@ -159,6 +160,108 @@ class SupplierCsvParserTest extends TestCase
         $parsed = $this->parser()->parse($csv, $supplier);
 
         $this->assertSame('naïve', $parsed['entries'][0]['raw_payload']['title']);
+    }
+
+    public function test_null_enclosure_uses_double_quote(): void
+    {
+        $supplier = $this->makeSupplier([
+            'csv_sku_column' => 'sku',
+            'csv_stock_column' => 'qty',
+            'csv_enclosure' => null,
+        ]);
+
+        $parsed = $this->parser()->parse("sku,qty\n\"ABC\",2\n", $supplier);
+
+        $this->assertSame('ABC', $parsed['entries'][0]['sku']);
+        $this->assertSame('"', $this->parser()->normalizeEnclosure(null));
+    }
+
+    public function test_empty_enclosure_uses_double_quote(): void
+    {
+        $this->assertSame('"', $this->parser()->normalizeEnclosure(''));
+        $this->assertSame('"', $this->parser()->normalizeEnclosure('   '));
+
+        $supplier = $this->makeSupplier([
+            'csv_sku_column' => 'sku',
+            'csv_stock_column' => 'qty',
+            'csv_enclosure' => '',
+        ]);
+
+        $parsed = $this->parser()->parse("sku,qty\n\"XYZ\",5\n", $supplier);
+
+        $this->assertSame('XYZ', $parsed['entries'][0]['sku']);
+    }
+
+    public function test_auto_enclosure_uses_double_quote(): void
+    {
+        $this->assertSame('"', $this->parser()->normalizeEnclosure('auto'));
+
+        $supplier = $this->makeSupplier([
+            'csv_sku_column' => 'sku',
+            'csv_stock_column' => 'qty',
+            'csv_enclosure' => 'auto',
+        ]);
+
+        $parsed = $this->parser()->parse("sku,qty\n\"AUTO-1\",1\n", $supplier);
+
+        $this->assertSame('AUTO-1', $parsed['entries'][0]['sku']);
+    }
+
+    public function test_invalid_multi_character_enclosure_uses_double_quote(): void
+    {
+        $this->assertSame('"', $this->parser()->normalizeEnclosure('""'));
+        $this->assertSame('"', $this->parser()->normalizeEnclosure('quote'));
+
+        $supplier = $this->makeSupplier([
+            'csv_sku_column' => 'sku',
+            'csv_stock_column' => 'qty',
+            'csv_enclosure' => '""',
+        ]);
+
+        $parsed = $this->parser()->parse("sku,qty\n\"SAFE\",8\n", $supplier);
+
+        $this->assertSame('SAFE', $parsed['entries'][0]['sku']);
+    }
+
+    public function test_semicolon_csv_parses_with_default_enclosure(): void
+    {
+        $supplier = $this->makeSupplier([
+            'csv_delimiter' => 'semicolon',
+            'csv_sku_column' => 'sku',
+            'csv_title_column' => 'title',
+            'csv_stock_column' => 'qty',
+            'csv_enclosure' => null,
+            'csv_escape' => null,
+        ]);
+
+        $parsed = $this->parser()->parse("sku;title;qty\n\"SKU-1\";\"Title; long\";5\n", $supplier);
+
+        $this->assertSame('SKU-1', $parsed['entries'][0]['sku']);
+        $this->assertSame('Title; long', $parsed['entries'][0]['raw_payload']['title']);
+        $this->assertSame(5, $parsed['entries'][0]['stock_quantity']);
+    }
+
+    public function test_prezioso_preview_works_with_auto_delimiter_and_default_enclosure(): void
+    {
+        $supplier = $this->makeSupplier([
+            'csv_delimiter' => 'auto',
+            'csv_encoding' => 'auto',
+            'csv_enclosure' => 'auto',
+            'csv_escape' => '',
+            'csv_sku_column' => 'CODICE',
+            'csv_stock_column' => 'QTA',
+            'csv_barcode_column' => 'EAN',
+            'matching_strategy' => 'sku_global',
+        ]);
+
+        $csv = "CODICE;EAN;QTA\n\"PREZ-1\";\"5901234123457\";\"12\"\n";
+        $parsed = $this->parser()->parse($csv, $supplier, 20);
+
+        $this->assertSame(';', $parsed['detected_delimiter']);
+        $this->assertSame(['CODICE', 'EAN', 'QTA'], $parsed['headers']);
+        $this->assertSame('PREZ-1', $parsed['preview_rows'][0]['CODICE']);
+        $this->assertSame('PREZ-1', $parsed['entries'][0]['sku']);
+        $this->assertSame(12, $parsed['entries'][0]['stock_quantity']);
     }
 
     private function parser(): SupplierCsvParser
