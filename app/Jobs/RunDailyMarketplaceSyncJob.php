@@ -5,6 +5,7 @@ namespace App\Jobs;
 use App\Enums\SyncJobStatus;
 use App\Models\SyncJob;
 use App\Services\Automation\DailyMarketplaceSync;
+use App\Services\Automation\DailyMarketplaceSyncResult;
 use App\Services\Sync\MarketplaceJobLock;
 use Illuminate\Contracts\Queue\ShouldQueue;
 use Illuminate\Foundation\Queue\Queueable;
@@ -65,19 +66,7 @@ class RunDailyMarketplaceSyncJob implements ShouldQueue
                 generateFailedCsv: $this->generateFailedCsv,
             );
 
-            $status = $result->successful ? SyncJobStatus::Completed : SyncJobStatus::Failed;
-
-            $syncJob->update([
-                'status' => $status,
-                'finished_at' => now(),
-                'heartbeat_at' => now(),
-                'error_message' => $result->successful ? null : $result->message,
-                'context' => array_merge($syncJob->context ?? [], [
-                    'stage' => $result->successful ? 'finished' : 'failed',
-                    'summary' => $result->summary,
-                    'last_progress_at' => now()->toIso8601String(),
-                ]),
-            ]);
+            $this->finalizeFromResult($syncJob, $result);
             $finalized = true;
 
             if (! $result->successful) {
@@ -110,6 +99,54 @@ class RunDailyMarketplaceSyncJob implements ShouldQueue
         }
     }
 
+    private function finalizeFromResult(SyncJob $syncJob, DailyMarketplaceSyncResult $result): void
+    {
+        $status = match ($result->outcome) {
+            DailyMarketplaceSyncResult::OUTCOME_PARTIAL => SyncJobStatus::Partial,
+            DailyMarketplaceSyncResult::OUTCOME_CANCELLED => SyncJobStatus::Cancelled,
+            DailyMarketplaceSyncResult::OUTCOME_FAILED => SyncJobStatus::Failed,
+            default => SyncJobStatus::Completed,
+        };
+
+        $varleExport = $result->summary['varle_export'] ?? [];
+        $failedCsv = $result->summary['failed_csv'] ?? null;
+        $warnings = $result->warnings;
+
+        $context = array_merge($syncJob->context ?? [], [
+            'stage' => $result->successful
+                ? ($result->isPartial() ? 'finished_with_warnings' : 'finished')
+                : ($result->outcome === DailyMarketplaceSyncResult::OUTCOME_CANCELLED ? 'cancelled' : 'failed'),
+            'outcome' => $result->outcome,
+            'summary' => $result->summary,
+            'warnings' => $warnings,
+            'last_progress_at' => now()->toIso8601String(),
+        ]);
+
+        if ($warnings !== []) {
+            $context['warning'] = $warnings[0];
+        }
+
+        if (isset($varleExport['skipped_variants'])) {
+            $context['varle_skipped_variants'] = (int) $varleExport['skipped_variants'];
+        }
+
+        if (isset($varleExport['exported_variants'])) {
+            $context['varle_exported_variants'] = (int) $varleExport['exported_variants'];
+        }
+
+        if (is_array($failedCsv)) {
+            $context['failed_csv'] = $failedCsv;
+        }
+
+        $syncJob->update([
+            'status' => $status,
+            'finished_at' => now(),
+            'heartbeat_at' => now(),
+            'error_message' => $result->successful ? null : $result->message,
+            'context' => $context,
+        ]);
+    }
+
     private function markFailed(SyncJob $syncJob, string $message): void
     {
         $syncJob->update([
@@ -119,6 +156,7 @@ class RunDailyMarketplaceSyncJob implements ShouldQueue
             'error_message' => $message,
             'context' => array_merge($syncJob->context ?? [], [
                 'stage' => 'failed',
+                'outcome' => DailyMarketplaceSyncResult::OUTCOME_FAILED,
                 'last_progress_at' => now()->toIso8601String(),
             ]),
         ]);

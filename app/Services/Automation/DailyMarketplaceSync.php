@@ -27,6 +27,7 @@ class DailyMarketplaceSync
         bool $generateFailedCsv = true,
     ): DailyMarketplaceSyncResult {
         $summary = [];
+        $warnings = [];
 
         try {
             if ($runShopifyImport) {
@@ -61,6 +62,7 @@ class DailyMarketplaceSync
 
                 if ($failedSuppliers !== []) {
                     $summary['supplier_sync_warnings'] = $failedSuppliers;
+                    $warnings[] = 'Supplier sync completed with warnings: '.implode(', ', $failedSuppliers);
                 }
             }
 
@@ -69,6 +71,8 @@ class DailyMarketplaceSync
                     'products_refreshed' => $this->readinessService->refreshAll(),
                 ];
             }
+
+            $varlePartial = false;
 
             if ($runVarleExport) {
                 $exportResult = $this->varleFeedPublisher->publish();
@@ -79,13 +83,23 @@ class DailyMarketplaceSync
                     'feed_path' => $exportResult->feedPath,
                     'public_url' => $exportResult->publicUrl,
                     'published_atomically' => true,
+                    'status' => $exportResult->skippedVariants > 0 && $exportResult->exportedVariants > 0
+                        ? 'partial'
+                        : ($exportResult->exportedVariants > 0 ? 'completed' : ($exportResult->skippedVariants > 0 ? 'failed' : 'completed')),
                 ];
 
-                if ($exportResult->skippedVariants > 0) {
+                if ($exportResult->exportedVariants === 0 && $exportResult->skippedVariants > 0) {
                     return DailyMarketplaceSyncResult::failed(
-                        'Varle export finished with skipped variants.',
+                        'Varle export failed: no variants were exported.',
                         $summary,
                     );
+                }
+
+                if ($exportResult->skippedVariants > 0) {
+                    $varlePartial = true;
+                    $warning = 'Varle export finished with skipped variants.';
+                    $warnings[] = $warning;
+                    $summary['varle_export']['warning'] = $warning;
                 }
             }
 
@@ -105,6 +119,14 @@ class DailyMarketplaceSync
             return DailyMarketplaceSyncResult::failed($exception->getMessage(), $summary);
         }
 
-        return DailyMarketplaceSyncResult::success($summary);
+        if ($varlePartial) {
+            return DailyMarketplaceSyncResult::partial(
+                'Daily marketplace sync completed with Varle export warnings.',
+                $summary,
+                $warnings,
+            );
+        }
+
+        return DailyMarketplaceSyncResult::success($summary, warnings: $warnings);
     }
 }
