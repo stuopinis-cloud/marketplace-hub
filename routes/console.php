@@ -1,5 +1,7 @@
 <?php
 
+use App\Console\MarketplaceScheduleRegistrar;
+use Illuminate\Console\Scheduling\Schedule as ConsoleSchedule;
 use Illuminate\Foundation\Inspiring;
 use Illuminate\Support\Facades\Artisan;
 use Illuminate\Support\Facades\Schedule;
@@ -12,6 +14,4 @@ Schedule::command('marketplace:run-due-schedules')
     ->everyMinute()
     ->withoutOverlapping();
 
-Schedule::command('sync:detect-stuck')
-    ->everyFiveMinutes()
-    ->withoutOverlapping();
+MarketplaceScheduleRegistrar::register(app(ConsoleSchedule::class));

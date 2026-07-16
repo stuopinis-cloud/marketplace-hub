@@ -24,6 +24,12 @@ return [
         'stuck_after_minutes' => (int) env('SYNC_STUCK_AFTER_MINUTES', 10),
     ],
 
+    'daily_sync' => [
+        'enabled' => env('MARKETPLACE_DAILY_SYNC_ENABLED', true),
+        'time' => env('MARKETPLACE_DAILY_SYNC_TIME', '03:00'),
+        'timezone' => 'Europe/Vilnius',
+    ],
+
     'suppliers' => [
         'csv_max_upload_kb' => (int) env('SUPPLIER_CSV_MAX_UPLOAD_KB', 10240),
     ],
