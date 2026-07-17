@@ -51,18 +51,27 @@ class DailyMarketplaceSync
                 $supplierResults = $this->supplierSyncManager->syncPublicationSuppliers();
                 $summary['supplier_sync'] = $supplierResults;
 
-                $failedSuppliers = collect([
-                    isset($supplierResults['mtac']['error']) ? 'M-Tac' : null,
-                    isset($supplierResults['helik']['error']) ? 'Helikon' : null,
-                    ...collect($supplierResults['csv'] ?? [])
-                        ->filter(fn (array $row): bool => isset($row['error']))
-                        ->pluck('name')
-                        ->all(),
-                ])->filter()->values()->all();
+                $failedSuppliers = collect($supplierResults)
+                    ->filter(fn (array $row): bool => isset($row['error']))
+                    ->values();
 
-                if ($failedSuppliers !== []) {
-                    $summary['supplier_sync_warnings'] = $failedSuppliers;
-                    $warnings[] = 'Supplier sync completed with warnings: '.implode(', ', $failedSuppliers);
+                if ($failedSuppliers->isNotEmpty()) {
+                    $names = $failedSuppliers->pluck('name')->all();
+                    $summary['supplier_sync_warnings'] = $names;
+                    $warnings[] = 'Supplier sync completed with warnings: '.implode(', ', $names);
+                }
+
+                $blockingFailures = $failedSuppliers
+                    ->filter(fn (array $row): bool => (bool) ($row['blocked'] ?? false))
+                    ->values();
+
+                if ($blockingFailures->isNotEmpty()) {
+                    $names = $blockingFailures->pluck('name')->all();
+
+                    return DailyMarketplaceSyncResult::failed(
+                        'Daily marketplace sync blocked by supplier failure: '.implode(', ', $names),
+                        $summary,
+                    );
                 }
             }
 

@@ -46,9 +46,11 @@ class Supplier extends Model
         'availability_fallback_quantity',
         'sync_enabled',
         'sync_interval_minutes',
+        'force_daily_sync',
         'stale_after_minutes',
         'last_sync_at',
         'last_sync_status',
+        'last_sync_message',
         'config',
     ];
 
@@ -62,6 +64,7 @@ class Supplier extends Model
             'availability_fallback_quantity' => 'integer',
             'sync_enabled' => 'boolean',
             'sync_interval_minutes' => 'integer',
+            'force_daily_sync' => 'boolean',
             'stale_after_minutes' => 'integer',
             'last_sync_at' => 'datetime',
             'config' => 'array',

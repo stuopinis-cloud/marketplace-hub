@@ -3,10 +3,16 @@
 namespace App\Services\Suppliers;
 
 use App\Models\Supplier;
+use App\Services\Suppliers\Csv\SupplierCsvConfig;
 use App\Services\Suppliers\Csv\SupplierCsvSupplierImporter;
 use App\Services\Suppliers\Helik\HelikSupplierImporter;
 use App\Services\Suppliers\Mtac\MtacSupplierImporter;
+use App\Services\Suppliers\Xml\SupplierXmlConfig;
+use App\Services\Suppliers\Xml\SupplierXmlSupplierImporter;
+use App\Services\Sync\MarketplaceJobLock;
+use Illuminate\Support\Collection;
 use InvalidArgumentException;
+use Throwable;
 
 class SupplierSyncManager
 {
@@ -14,8 +20,27 @@ class SupplierSyncManager
         private readonly MtacSupplierImporter $mtacImporter,
         private readonly HelikSupplierImporter $helikImporter,
         private readonly SupplierCsvSupplierImporter $csvImporter,
+        private readonly SupplierXmlSupplierImporter $xmlImporter,
         private readonly SupplierProvisioner $supplierProvisioner,
     ) {}
+
+    /**
+     * @return list<string>
+     */
+    public function supportedConnectorTypes(): array
+    {
+        return [
+            Supplier::CONNECTOR_XML_URL,
+            Supplier::CONNECTOR_API,
+            Supplier::CONNECTOR_CSV_URL,
+            Supplier::CONNECTOR_CSV_UPLOAD,
+        ];
+    }
+
+    public function supportsConnector(?string $connectorType): bool
+    {
+        return in_array($connectorType, $this->supportedConnectorTypes(), true);
+    }
 
     public function sync(string $supplierCode, ?SupplierSyncOptions $options = null): SupplierSyncResult
     {
@@ -35,6 +60,10 @@ class SupplierSyncManager
             throw new InvalidArgumentException('Unknown supplier code: '.$supplierCode);
         }
 
+        if (! $this->supportsConnector($supplier->connector_type)) {
+            throw new InvalidArgumentException('Unsupported supplier connector type: '.$supplier->connector_type);
+        }
+
         return match ($supplier->connector_type) {
             Supplier::CONNECTOR_XML_URL => $this->syncXmlUrlSupplier($supplier, $options),
             Supplier::CONNECTOR_API => $this->syncApiSupplier($supplier, $options),
@@ -45,11 +74,11 @@ class SupplierSyncManager
 
     private function syncXmlUrlSupplier(Supplier $supplier, ?SupplierSyncOptions $options): SupplierSyncResult
     {
-        if ($supplier->code !== Supplier::CODE_MTAC) {
-            throw new InvalidArgumentException('Unsupported XML URL supplier: '.$supplier->code);
+        if ($supplier->code === Supplier::CODE_MTAC && ! SupplierXmlConfig::isConfigured($supplier)) {
+            return $this->mtacImporter->sync($options);
         }
 
-        return $this->mtacImporter->sync($options);
+        return $this->xmlImporter->sync($supplier, $options);
     }
 
     private function syncApiSupplier(Supplier $supplier, ?SupplierSyncOptions $options): SupplierSyncResult
@@ -75,39 +104,186 @@ class SupplierSyncManager
         return $this->helikImporter->sync($options);
     }
 
+    public function isDueForSync(Supplier $supplier, bool $force = false): bool
+    {
+        if ($force || $supplier->force_daily_sync) {
+            return true;
+        }
+
+        if ($supplier->last_sync_at === null) {
+            return true;
+        }
+
+        $interval = $supplier->sync_interval_minutes;
+
+        if ($interval === null || $interval <= 0) {
+            return true;
+        }
+
+        return $supplier->last_sync_at->lte(now()->subMinutes($interval));
+    }
+
+    public function shouldBlockDailySyncOnFailure(Supplier $supplier): bool
+    {
+        return (bool) data_get($supplier->config, 'block_daily_sync_on_failure', false);
+    }
+
+    public function isReadyToSync(Supplier $supplier): bool
+    {
+        if (! $this->supportsConnector($supplier->connector_type)) {
+            return false;
+        }
+
+        if ($supplier->connector_type === Supplier::CONNECTOR_CSV_UPLOAD) {
+            $path = SupplierCsvConfig::uploadedFilePath($supplier);
+
+            if (blank($path)) {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
     /**
+     * Enabled suppliers with a supported connector, optionally filtered by code.
+     *
+     * @param  list<string>|null  $onlyCodes
+     * @return Collection<int, Supplier>
+     */
+    public function enabledSuppliers(?array $onlyCodes = null): Collection
+    {
+        $query = Supplier::query()
+            ->where('enabled', true)
+            ->where('sync_enabled', true)
+            ->whereIn('connector_type', $this->supportedConnectorTypes())
+            ->whereNotNull('code')
+            ->where('code', '!=', '')
+            ->orderBy('stock_priority')
+            ->orderBy('id');
+
+        if ($onlyCodes !== null) {
+            $normalized = array_values(array_filter(array_map(
+                fn (string $code): string => mb_strtolower(trim($code)),
+                $onlyCodes,
+            )));
+
+            $query->whereIn('code', $normalized);
+        }
+
+        return $query->get()->filter(fn (Supplier $supplier): bool => $this->isReadyToSync($supplier))->values();
+    }
+
+    /**
+     * Daily / publication pipeline: sync every enabled supplier that is due.
+     *
+     * @return array<int, array{
+     *     code: string,
+     *     name: string,
+     *     result?: SupplierSyncResult,
+     *     error?: string,
+     *     skipped?: string,
+     *     blocked?: bool
+     * }>
+     */
+    public function syncPublicationSuppliers(?SupplierSyncOptions $options = null): array
+    {
+        $options ??= new SupplierSyncOptions;
+
+        return $this->syncSuppliers(
+            $this->enabledSuppliers($options->only),
+            $options,
+            respectInterval: ! $options->force,
+        );
+    }
+
+    /**
+     * Sync all enabled suppliers (used by supplier:sync-all).
+     *
+     * @return array<int, array{
+     *     code: string,
+     *     name: string,
+     *     result?: SupplierSyncResult,
+     *     error?: string,
+     *     skipped?: string,
+     *     blocked?: bool
+     * }>
+     */
+    public function syncEnabledSuppliers(?SupplierSyncOptions $options = null): array
+    {
+        $options ??= new SupplierSyncOptions;
+
+        return $this->syncSuppliers(
+            $this->enabledSuppliers($options->only),
+            $options,
+            respectInterval: ! $options->force,
+        );
+    }
+
+    /**
+     * @return array<int, array{
+     *     code: string,
+     *     name: string,
+     *     result?: SupplierSyncResult,
+     *     error?: string,
+     *     skipped?: string,
+     *     blocked?: bool
+     * }>
+     */
+    public function syncAll(?SupplierSyncOptions $options = null): array
+    {
+        return $this->syncEnabledSuppliers($options);
+    }
+
+    /**
+     * @deprecated Use syncEnabledCsvSuppliers via enabledSuppliers filtering; kept for compatibility.
+     *
      * @return array<int, array{code: string, name: string, result?: SupplierSyncResult, error?: string}>
      */
     public function syncEnabledCsvSuppliers(?SupplierSyncOptions $options = null): array
     {
+        $options ??= new SupplierSyncOptions;
+
+        $suppliers = $this->enabledSuppliers($options->only)
+            ->filter(fn (Supplier $supplier): bool => in_array($supplier->connector_type, [
+                Supplier::CONNECTOR_CSV_URL,
+                Supplier::CONNECTOR_CSV_UPLOAD,
+            ], true))
+            ->values();
+
+        return $this->syncSuppliers($suppliers, $options, respectInterval: ! $options->force);
+    }
+
+    /**
+     * @param  Collection<int, Supplier>  $suppliers
+     * @return array<int, array{
+     *     code: string,
+     *     name: string,
+     *     result?: SupplierSyncResult,
+     *     error?: string,
+     *     skipped?: string,
+     *     blocked?: bool
+     * }>
+     */
+    private function syncSuppliers(Collection $suppliers, SupplierSyncOptions $options, bool $respectInterval): array
+    {
         $results = [];
 
-        $suppliers = Supplier::query()
-            ->where('enabled', true)
-            ->where('sync_enabled', true)
-            ->whereIn('connector_type', [Supplier::CONNECTOR_CSV_URL, Supplier::CONNECTOR_CSV_UPLOAD])
-            ->orderBy('stock_priority')
-            ->get();
-
         foreach ($suppliers as $supplier) {
-            if (blank($supplier->code)) {
+            $code = (string) $supplier->code;
+            $name = (string) $supplier->name;
+
+            if ($respectInterval && ! $this->isDueForSync($supplier, $options->force)) {
+                $results[] = [
+                    'code' => $code,
+                    'name' => $name,
+                    'skipped' => 'not_due',
+                ];
+
                 continue;
             }
 
-            try {
-                $result = $this->csvImporter->sync($supplier, $options);
-                $results[] = [
-                    'code' => (string) $supplier->code,
-                    'name' => (string) $supplier->name,
-                    'result' => $result,
-                ];
-            } catch (\Throwable $exception) {
-                $results[] = [
-                    'code' => (string) $supplier->code,
-                    'name' => (string) $supplier->name,
-                    'error' => $exception->getMessage(),
-                ];
-            }
+            $results[] = $this->syncSupplierWithLock($supplier, $options);
         }
 
         return $results;
@@ -115,76 +291,59 @@ class SupplierSyncManager
 
     /**
      * @return array{
-     *     mtac: array{result?: SupplierSyncResult, error?: string},
-     *     helik: array{result?: SupplierSyncResult, error?: string},
-     *     csv: array<int, array{code: string, name: string, result?: SupplierSyncResult, error?: string}>
+     *     code: string,
+     *     name: string,
+     *     result?: SupplierSyncResult,
+     *     error?: string,
+     *     skipped?: string,
+     *     blocked?: bool
      * }
      */
-    public function syncPublicationSuppliers(?SupplierSyncOptions $options = null): array
+    private function syncSupplierWithLock(Supplier $supplier, SupplierSyncOptions $options): array
     {
-        $summary = [
-            'mtac' => [],
-            'helik' => [],
-            'csv' => [],
-        ];
+        $code = (string) $supplier->code;
+        $name = (string) $supplier->name;
+        $lockKey = MarketplaceJobLock::forSupplier($code);
+        $lock = MarketplaceJobLock::make($lockKey);
 
-        try {
-            $summary['mtac']['result'] = $this->syncMtac($options);
-        } catch (\Throwable $exception) {
-            $summary['mtac']['error'] = $exception->getMessage();
+        if (! $lock->get()) {
+            return [
+                'code' => $code,
+                'name' => $name,
+                'skipped' => 'already_running',
+                'error' => 'Supplier sync already running.',
+                'blocked' => $this->shouldBlockDailySyncOnFailure($supplier),
+            ];
         }
 
         try {
-            $summary['helik']['result'] = $this->syncHelik($options);
-        } catch (\Throwable $exception) {
-            $summary['helik']['error'] = $exception->getMessage();
+            $result = $this->sync($code, $options);
+
+            return [
+                'code' => $code,
+                'name' => $name,
+                'result' => $result,
+            ];
+        } catch (Throwable $exception) {
+            $this->recordSupplierFailure($supplier, $exception);
+
+            return [
+                'code' => $code,
+                'name' => $name,
+                'error' => $exception->getMessage(),
+                'blocked' => $this->shouldBlockDailySyncOnFailure($supplier),
+            ];
+        } finally {
+            $lock->release();
         }
-
-        $summary['csv'] = $this->syncEnabledCsvSuppliers($options);
-
-        return $summary;
     }
 
-    /**
-     * @return array<int, array{code: string, name: string, result?: SupplierSyncResult, error?: string}>
-     */
-    public function syncEnabledSuppliers(?SupplierSyncOptions $options = null): array
+    private function recordSupplierFailure(Supplier $supplier, Throwable $exception): void
     {
-        $results = [];
-
-        $suppliers = Supplier::query()
-            ->where('enabled', true)
-            ->where('sync_enabled', true)
-            ->orderBy('stock_priority')
-            ->get();
-
-        foreach ($suppliers as $supplier) {
-            if (blank($supplier->code)) {
-                continue;
-            }
-
-            try {
-                $result = $this->sync((string) $supplier->code, $options);
-                $results[] = [
-                    'code' => (string) $supplier->code,
-                    'name' => (string) $supplier->name,
-                    'result' => $result,
-                ];
-            } catch (\Throwable $exception) {
-                $results[] = [
-                    'code' => (string) $supplier->code,
-                    'name' => (string) $supplier->name,
-                    'error' => $exception->getMessage(),
-                ];
-            }
-        }
-
-        return $results;
-    }
-
-    public function syncAll(?SupplierSyncOptions $options = null): array
-    {
-        return $this->syncEnabledSuppliers($options);
+        $supplier->forceFill([
+            'last_sync_status' => 'failed',
+            'last_sync_message' => $exception->getMessage(),
+        ])->save();
     }
 
     public function setupMtac(): Supplier

@@ -28,9 +28,8 @@ class DailyMarketplaceSyncTest extends TestCase
 
         $this->mock(SupplierSyncManager::class, function (MockInterface $mock): void {
             $mock->shouldReceive('syncPublicationSuppliers')->once()->andReturn([
-                'mtac' => ['result' => new SupplierSyncResult(1, 1, 1, 0, 0, 0, 1, 0, 0, 0)],
-                'helik' => ['result' => new SupplierSyncResult(2, 1, 1, 0, 0, 0, 1, 0, 0, 0)],
-                'csv' => [],
+                ['code' => 'mtac', 'name' => 'M-Tac', 'result' => new SupplierSyncResult(1, 1, 1, 0, 0, 0, 1, 0, 0, 0)],
+                ['code' => 'helik', 'name' => 'Helikon', 'result' => new SupplierSyncResult(2, 1, 1, 0, 0, 0, 1, 0, 0, 0)],
             ]);
         });
 
@@ -69,9 +68,7 @@ class DailyMarketplaceSyncTest extends TestCase
 
         $this->mock(SupplierSyncManager::class, function (MockInterface $mock): void {
             $mock->shouldReceive('syncPublicationSuppliers')->once()->andReturn([
-                'mtac' => ['result' => new SupplierSyncResult(1, 1, 1, 0, 0, 0, 1, 0, 0, 0)],
-                'helik' => ['result' => new SupplierSyncResult(2, 1, 1, 0, 0, 0, 1, 0, 0, 0)],
-                'csv' => [],
+                ['code' => 'mtac', 'name' => 'M-Tac', 'result' => new SupplierSyncResult(1, 1, 1, 0, 0, 0, 1, 0, 0, 0)],
             ]);
         });
 
@@ -121,11 +118,7 @@ class DailyMarketplaceSyncTest extends TestCase
         });
 
         $this->mock(SupplierSyncManager::class, function (MockInterface $mock): void {
-            $mock->shouldReceive('syncPublicationSuppliers')->once()->andReturn([
-                'mtac' => ['result' => new SupplierSyncResult(1, 1, 1, 0, 0, 0, 1, 0, 0, 0)],
-                'helik' => ['result' => new SupplierSyncResult(2, 1, 1, 0, 0, 0, 1, 0, 0, 0)],
-                'csv' => [],
-            ]);
+            $mock->shouldReceive('syncPublicationSuppliers')->once()->andReturn([]);
         });
 
         $this->mock(VarleReadinessService::class, function (MockInterface $mock): void {
@@ -147,5 +140,69 @@ class DailyMarketplaceSyncTest extends TestCase
         $this->assertFalse($result->successful);
         $this->assertSame(DailyMarketplaceSyncResult::OUTCOME_FAILED, $result->outcome);
         $this->assertStringContainsString('no variants were exported', $result->message);
+    }
+
+    public function test_failed_supplier_does_not_block_varle_export_by_default(): void
+    {
+        $this->mock(ShopifyProductImporter::class, function (MockInterface $mock): void {
+            $mock->shouldReceive('import')->once()->andReturn(new ShopifyImportResult(1, 2, 3, 0));
+        });
+
+        $this->mock(SupplierSyncManager::class, function (MockInterface $mock): void {
+            $mock->shouldReceive('syncPublicationSuppliers')->once()->andReturn([
+                ['code' => 'prezioso', 'name' => 'Prezioso', 'error' => 'Feed down', 'blocked' => false],
+            ]);
+        });
+
+        $this->mock(VarleReadinessService::class, function (MockInterface $mock): void {
+            $mock->shouldReceive('refreshAll')->once()->andReturn(1);
+        });
+
+        $this->mock(VarleFeedPublisher::class, function (MockInterface $mock): void {
+            $mock->shouldReceive('publish')->once()->andReturn(new VarleExportResult(
+                syncJobId: 9,
+                exportedVariants: 2,
+                skippedVariants: 0,
+                feedPath: '/tmp/feeds/varle.xml',
+                publicUrl: 'https://example.test/feeds/varle.xml',
+            ));
+        });
+
+        $this->mock(SyncJobFailedCsvExporter::class, function (MockInterface $mock): void {
+            $mock->shouldReceive('resolveSyncJob')->once()->andReturn(null);
+        });
+
+        $result = app(DailyMarketplaceSync::class)->run();
+
+        $this->assertTrue($result->successful);
+        $this->assertContains('Supplier sync completed with warnings: Prezioso', $result->warnings);
+        $this->assertArrayHasKey('varle_export', $result->summary);
+    }
+
+    public function test_failed_supplier_blocks_when_block_daily_sync_on_failure_true(): void
+    {
+        $this->mock(ShopifyProductImporter::class, function (MockInterface $mock): void {
+            $mock->shouldReceive('import')->once()->andReturn(new ShopifyImportResult(1, 2, 3, 0));
+        });
+
+        $this->mock(SupplierSyncManager::class, function (MockInterface $mock): void {
+            $mock->shouldReceive('syncPublicationSuppliers')->once()->andReturn([
+                ['code' => 'prezioso', 'name' => 'Prezioso', 'error' => 'Feed down', 'blocked' => true],
+            ]);
+        });
+
+        $this->mock(VarleReadinessService::class, function (MockInterface $mock): void {
+            $mock->shouldReceive('refreshAll')->never();
+        });
+
+        $this->mock(VarleFeedPublisher::class, function (MockInterface $mock): void {
+            $mock->shouldReceive('publish')->never();
+        });
+
+        $result = app(DailyMarketplaceSync::class)->run();
+
+        $this->assertFalse($result->successful);
+        $this->assertStringContainsString('blocked by supplier failure', $result->message);
+        $this->assertArrayNotHasKey('varle_export', $result->summary);
     }
 }

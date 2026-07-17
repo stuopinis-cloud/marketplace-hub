@@ -11,7 +11,9 @@ use BackedEnum;
 use Filament\Actions\Action;
 use Filament\Actions\EditAction;
 use Filament\Forms\Components\FileUpload;
+use Filament\Forms\Components\KeyValue;
 use Filament\Forms\Components\Select;
+use Filament\Forms\Components\Textarea;
 use Filament\Forms\Components\TextInput;
 use Filament\Forms\Components\Toggle;
 use Filament\Notifications\Notification;
@@ -40,11 +42,11 @@ class SupplierResource extends Resource
         return $schema->components([
             TextInput::make('name')->required(),
             TextInput::make('code')->required()->unique(ignoreRecord: true),
-            Toggle::make('enabled')->default(true),
+            Toggle::make('enabled')->label('Active')->default(true),
             Select::make('connector_type')
                 ->options([
                     Supplier::CONNECTOR_XML_URL => 'XML URL',
-                    Supplier::CONNECTOR_API => 'API',
+                    Supplier::CONNECTOR_API => 'API / JSON',
                     Supplier::CONNECTOR_CSV_URL => 'CSV URL',
                     Supplier::CONNECTOR_CSV_UPLOAD => 'CSV Upload',
                 ])
@@ -165,6 +167,37 @@ class SupplierResource extends Resource
                     TextInput::make('config.csv_vendor_column')->label('Vendor column'),
                     TextInput::make('config.csv_title_column')->label('Title / name column'),
                     TextInput::make('config.csv_price_column')->label('Cost / price column'),
+                ])
+                ->columnSpanFull(),
+            Section::make('XML settings')
+                ->visible(fn (Get $get): bool => $get('connector_type') === Supplier::CONNECTOR_XML_URL)
+                ->description('M-Tac uses built-in Google Atom paths when these are empty. Other XML suppliers require item + SKU paths.')
+                ->columns(2)
+                ->schema([
+                    TextInput::make('config.xml_item_path')
+                        ->label('Item XPath')
+                        ->helperText('Example: //product or //atom:entry')
+                        ->columnSpanFull(),
+                    TextInput::make('config.xml_sku_path')->label('SKU path')->helperText('Relative to each item node'),
+                    TextInput::make('config.xml_stock_path')->label('Stock path'),
+                    TextInput::make('config.xml_availability_path')->label('Availability path'),
+                    TextInput::make('config.xml_barcode_path')->label('Barcode path'),
+                    TextInput::make('config.xml_title_path')->label('Title path'),
+                    KeyValue::make('config.xml_namespaces')
+                        ->label('XML namespaces')
+                        ->keyLabel('Prefix')
+                        ->valueLabel('URI')
+                        ->columnSpanFull(),
+                ])
+                ->columnSpanFull(),
+            Section::make('Matching')
+                ->visible(fn (Get $get): bool => in_array($get('connector_type'), [
+                    Supplier::CONNECTOR_CSV_URL,
+                    Supplier::CONNECTOR_CSV_UPLOAD,
+                    Supplier::CONNECTOR_XML_URL,
+                ], true))
+                ->columns(2)
+                ->schema([
                     Select::make('config.matching_strategy')
                         ->label('Matching strategy')
                         ->options([
@@ -215,9 +248,39 @@ class SupplierResource extends Resource
                 ->numeric()
                 ->default(5)
                 ->helperText('Quantity used only when supplier reports positive boolean/text availability but no numeric stock quantity. Explicit numeric zero remains unavailable by default.'),
-            Toggle::make('sync_enabled')->default(false),
-            TextInput::make('sync_interval_minutes')->numeric(),
-            TextInput::make('stale_after_minutes')->numeric(),
+            Section::make('Daily sync')
+                ->columns(2)
+                ->schema([
+                    Toggle::make('sync_enabled')->label('Sync enabled')->default(false),
+                    Toggle::make('force_daily_sync')
+                        ->label('Force every daily sync')
+                        ->helperText('Ignore sync interval and always run during marketplace daily sync.'),
+                    TextInput::make('sync_interval_minutes')
+                        ->label('Sync interval minutes')
+                        ->numeric()
+                        ->helperText('Skipped during daily sync when last sync is newer than this interval, unless forced.'),
+                    Toggle::make('config.block_daily_sync_on_failure')
+                        ->label('Block daily sync on failure')
+                        ->helperText('When enabled, a failed sync stops readiness refresh and Varle export.'),
+                    TextInput::make('stale_after_minutes')->numeric()->label('Stale after minutes'),
+                    TextInput::make('last_sync_at')
+                        ->label('Last synced at')
+                        ->disabled()
+                        ->dehydrated(false)
+                        ->formatStateUsing(fn (mixed $state): ?string => $state instanceof \Carbon\CarbonInterface
+                            ? $state->toDateTimeString()
+                            : (is_string($state) ? $state : null)),
+                    TextInput::make('last_sync_status')
+                        ->label('Last sync status')
+                        ->disabled()
+                        ->dehydrated(false),
+                    Textarea::make('last_sync_message')
+                        ->label('Last sync message')
+                        ->disabled()
+                        ->dehydrated(false)
+                        ->columnSpanFull(),
+                ])
+                ->columnSpanFull(),
         ]);
     }
 

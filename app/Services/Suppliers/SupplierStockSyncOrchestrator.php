@@ -322,6 +322,7 @@ class SupplierStockSyncOrchestrator
             $supplier->update([
                 'last_sync_at' => now(),
                 'last_sync_status' => $status->value,
+                'last_sync_message' => null,
             ]);
         }
     }
@@ -337,6 +338,7 @@ class SupplierStockSyncOrchestrator
 
         $supplier->update([
             'last_sync_status' => SyncJobStatus::Failed->value,
+            'last_sync_message' => $exception->getMessage(),
         ]);
     }
 
