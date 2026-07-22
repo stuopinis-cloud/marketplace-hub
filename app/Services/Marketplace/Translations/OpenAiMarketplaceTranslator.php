@@ -4,6 +4,7 @@ namespace App\Services\Marketplace\Translations;
 
 use App\Contracts\Marketplace\MarketplaceTranslatorInterface;
 use Illuminate\Support\Facades\Http;
+use Illuminate\Support\Facades\RateLimiter;
 use RuntimeException;
 
 class OpenAiMarketplaceTranslator implements MarketplaceTranslatorInterface
@@ -35,6 +36,8 @@ class OpenAiMarketplaceTranslator implements MarketplaceTranslatorInterface
             throw new RuntimeException('OpenAI API key is not configured for marketplace translations.');
         }
 
+        $this->throttle();
+
         $model = (string) config('marketplace.translations.openai.model', 'gpt-4o-mini');
         $timeout = (int) config('marketplace.translations.openai.timeout', 45);
 
@@ -56,6 +59,15 @@ class OpenAiMarketplaceTranslator implements MarketplaceTranslatorInterface
                 ],
             ]);
 
+        if ($response->status() === 429) {
+            $retryAfter = (int) ($response->header('Retry-After') ?: 60);
+
+            throw new OpenAiRateLimitException(
+                'OpenAI translation request failed with HTTP 429',
+                max(1, $retryAfter),
+            );
+        }
+
         if (! $response->successful()) {
             throw new RuntimeException('OpenAI translation request failed with HTTP '.$response->status());
         }
@@ -72,6 +84,21 @@ class OpenAiMarketplaceTranslator implements MarketplaceTranslatorInterface
     public function providerName(): string
     {
         return 'openai';
+    }
+
+    private function throttle(): void
+    {
+        $rpm = max(1, (int) config('marketplace.translations.rpm', 10));
+        $key = 'marketplace-translation-openai-rpm';
+
+        if (RateLimiter::tooManyAttempts($key, $rpm)) {
+            throw new OpenAiRateLimitException(
+                'OpenAI translation local RPM limit reached.',
+                max(1, RateLimiter::availableIn($key)),
+            );
+        }
+
+        RateLimiter::hit($key, 60);
     }
 
     private function systemPrompt(?string $marketplace): string

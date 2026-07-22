@@ -7,7 +7,6 @@ use App\Jobs\TranslateProductFieldJob;
 use App\Jobs\TranslateProductForMarketplaceJob;
 use App\Models\MarketplaceTranslation;
 use App\Models\Product;
-use Illuminate\Support\Collection;
 
 class TranslationQueueService
 {
@@ -23,35 +22,44 @@ class TranslationQueueService
         $productsQueued = 0;
         $fieldsQueued = 0;
 
-        $query = Product::query()->orderBy('id');
+        $productQuery = Product::query()->orderBy('id');
 
         if ($limit !== null) {
-            $query->limit($limit);
+            $productQuery->limit(max(1, $limit));
         }
 
-        $query->chunkById(100, function (Collection $products) use ($marketplace, $locale, &$productsQueued, &$fieldsQueued): void {
-            foreach ($products as $product) {
-                TranslateProductForMarketplaceJob::dispatch($product->id, $marketplace, $locale);
-                $productsQueued++;
-            }
-        });
+        $productIds = $productQuery->pluck('id');
 
-        // Also re-queue existing missing/failed rows not yet tied to a product job cycle.
+        foreach ($productIds as $productId) {
+            TranslateProductForMarketplaceJob::dispatch((int) $productId, $marketplace, $locale);
+            $productsQueued++;
+        }
+
         $fieldQuery = MarketplaceTranslation::query()
             ->where('marketplace', $marketplace)
             ->where('locale', $locale)
             ->whereIn('status', [
                 MarketplaceTranslationStatus::Missing->value,
                 MarketplaceTranslationStatus::Failed->value,
-                MarketplaceTranslationStatus::Queued->value,
-            ]);
+            ])
+            ->orderBy('id');
 
-        $fieldQuery->orderBy('id')->chunkById(200, function (Collection $rows) use (&$fieldsQueued): void {
-            foreach ($rows as $row) {
-                TranslateProductFieldJob::dispatch($row->id);
-                $fieldsQueued++;
+        if ($limit !== null) {
+            $fieldQuery->limit(max(1, $limit));
+        }
+
+        foreach ($fieldQuery->get() as $row) {
+            if ($row->status === MarketplaceTranslationStatus::Queued) {
+                continue;
             }
-        });
+
+            $row->update([
+                'status' => MarketplaceTranslationStatus::Queued,
+                'error_message' => null,
+            ]);
+            TranslateProductFieldJob::dispatch($row->id);
+            $fieldsQueued++;
+        }
 
         return [
             'products_queued' => $productsQueued,
@@ -72,7 +80,17 @@ class TranslationQueueService
         $count = 0;
 
         foreach ($translationIds as $id) {
-            MarketplaceTranslation::query()->whereKey($id)->update([
+            $translation = MarketplaceTranslation::query()->find($id);
+
+            if ($translation === null) {
+                continue;
+            }
+
+            if ($translation->status === MarketplaceTranslationStatus::Queued) {
+                continue;
+            }
+
+            $translation->update([
                 'status' => MarketplaceTranslationStatus::Queued,
                 'error_message' => null,
             ]);

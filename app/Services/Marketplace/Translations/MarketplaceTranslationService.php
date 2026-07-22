@@ -281,6 +281,14 @@ class MarketplaceTranslationService
                 'translated_at' => now(),
                 'error_message' => null,
             ]);
+        } catch (OpenAiRateLimitException $exception) {
+            $translation->update([
+                'status' => MarketplaceTranslationStatus::Queued,
+                'provider' => $translator->providerName(),
+                'error_message' => $exception->getMessage(),
+            ]);
+
+            throw $exception;
         } catch (\Throwable $exception) {
             $translation->update([
                 'status' => MarketplaceTranslationStatus::Failed,
