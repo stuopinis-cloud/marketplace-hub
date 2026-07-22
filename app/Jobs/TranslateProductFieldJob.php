@@ -73,6 +73,26 @@ class TranslateProductFieldJob implements ShouldQueue
         MarketplaceTranslation $translation,
         OpenAiRateLimitException $exception,
     ): void {
+        if ($this->isLocalRateLimit($exception)) {
+            $delay = $this->localRetryDelaySeconds($exception->retryAfterSeconds);
+
+            $translation->update([
+                'status' => MarketplaceTranslationStatus::Queued,
+                'error_message' => 'OpenAI translation local RPM limit reached, retrying later',
+            ]);
+
+            // Soft throttle must never permanently fail the translation row or burn
+            // the HTTP-429 attempt budget. Prefer release; re-dispatch when exhausted.
+            if ($this->attempts() < $this->tries()) {
+                $this->release($delay);
+            } else {
+                TranslateProductFieldJob::dispatch($this->translationId)
+                    ->delay(now()->addSeconds($delay));
+            }
+
+            return;
+        }
+
         $attempt = $this->attempts();
         $maxTries = $this->tries();
 
@@ -95,9 +115,30 @@ class TranslateProductFieldJob implements ShouldQueue
         ]);
     }
 
+    private function isLocalRateLimit(OpenAiRateLimitException $exception): bool
+    {
+        if ($exception->isLocal) {
+            return true;
+        }
+
+        return str_contains(strtolower($exception->getMessage()), 'local rpm');
+    }
+
+    private function localRetryDelaySeconds(int $retryAfterSeconds): int
+    {
+        $base = max(
+            1,
+            (int) config('marketplace.translations.retry_delay_seconds', 60),
+            $retryAfterSeconds,
+        );
+
+        return $base + random_int(0, 15);
+    }
+
     private function backoffSeconds(int $attempt, int $retryAfterSeconds): int
     {
-        $exponential = (int) min(300, (2 ** max(0, $attempt - 1)) + random_int(0, 5));
+        $base = max(1, (int) config('marketplace.translations.retry_delay_seconds', 60));
+        $exponential = (int) min(300, ($base * (2 ** max(0, $attempt - 1))) + random_int(0, 15));
 
         return max($retryAfterSeconds, $exponential);
     }

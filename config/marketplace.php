@@ -29,11 +29,12 @@ return [
         ],
     ],
 
-        'translations' => [
+    'translations' => [
         'provider' => env('MARKETPLACE_TRANSLATION_PROVIDER', 'openai'),
         'source_locale' => env('MARKETPLACE_TRANSLATION_SOURCE_LOCALE', 'lt'),
         'lock_seconds' => (int) env('MARKETPLACE_TRANSLATION_LOCK_SECONDS', 300),
         'rpm' => (int) env('MARKETPLACE_TRANSLATION_RPM', 10),
+        'retry_delay_seconds' => (int) env('MARKETPLACE_TRANSLATION_RETRY_DELAY_SECONDS', 60),
         'retries' => (int) env('MARKETPLACE_TRANSLATION_RETRIES', 5),
         'auto_queue_missing_translations_for_ebay' => env('AUTO_QUEUE_MISSING_TRANSLATIONS_FOR_EBAY', false),
         'openai' => [

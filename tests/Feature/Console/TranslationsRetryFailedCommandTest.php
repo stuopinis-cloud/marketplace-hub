@@ -152,7 +152,7 @@ class TranslationsRetryFailedCommandTest extends TestCase
 
         $translator = Mockery::mock(\App\Contracts\Marketplace\MarketplaceTranslatorInterface::class);
         $translator->shouldReceive('providerName')->andReturn('openai');
-        $translator->shouldReceive('translate')->once()->andThrow(new OpenAiRateLimitException('HTTP 429', 30));
+        $translator->shouldReceive('translate')->once()->andThrow(new OpenAiRateLimitException('HTTP 429', 30, isLocal: false));
 
         $job = Mockery::mock(TranslateProductFieldJob::class, [$row->id])->makePartial();
         $job->shouldAllowMockingProtectedMethods();
@@ -166,6 +166,80 @@ class TranslationsRetryFailedCommandTest extends TestCase
         $this->assertStringContainsString('429', (string) $row->fresh()->error_message);
     }
 
+    public function test_local_rpm_limit_releases_job_with_delay_and_does_not_mark_failed(): void
+    {
+        config([
+            'marketplace.translations.retries' => 5,
+            'marketplace.translations.retry_delay_seconds' => 60,
+        ]);
+
+        $product = $this->makeProduct();
+        $row = $this->makeFailed($product, 'ebay', 'en', 'title', 'prior');
+        $row->update(['status' => MarketplaceTranslationStatus::Queued, 'error_message' => null]);
+
+        $translator = Mockery::mock(\App\Contracts\Marketplace\MarketplaceTranslatorInterface::class);
+        $translator->shouldReceive('providerName')->andReturn('openai');
+        $translator->shouldReceive('translate')->once()->andThrow(
+            new OpenAiRateLimitException(
+                'OpenAI translation local RPM limit reached, retrying later',
+                60,
+                isLocal: true,
+            ),
+        );
+
+        $job = Mockery::mock(TranslateProductFieldJob::class, [$row->id])->makePartial();
+        $job->shouldReceive('attempts')->andReturn(1);
+        $job->shouldReceive('tries')->andReturn(5);
+        $job->shouldReceive('release')->once()->with(Mockery::on(fn (int $delay): bool => $delay >= 60));
+
+        $job->handle(app(MarketplaceTranslationService::class), $translator);
+
+        $this->assertSame(MarketplaceTranslationStatus::Queued, $row->fresh()->status);
+        $this->assertStringContainsString('local RPM limit', (string) $row->fresh()->error_message);
+        $this->assertStringContainsString('retrying later', (string) $row->fresh()->error_message);
+        $this->assertNotSame(MarketplaceTranslationStatus::Failed, $row->fresh()->status);
+    }
+
+    public function test_local_rpm_at_max_attempts_requeues_instead_of_failing(): void
+    {
+        config([
+            'marketplace.translations.retries' => 2,
+            'marketplace.translations.retry_delay_seconds' => 60,
+        ]);
+
+        $product = $this->makeProduct();
+        $row = $this->makeFailed($product, 'ebay', 'en', 'title', 'prior');
+        $row->update(['status' => MarketplaceTranslationStatus::Queued, 'error_message' => null]);
+
+        Queue::fake();
+
+        $translator = Mockery::mock(\App\Contracts\Marketplace\MarketplaceTranslatorInterface::class);
+        $translator->shouldReceive('providerName')->andReturn('openai');
+        $translator->shouldReceive('translate')->once()->andThrow(
+            new OpenAiRateLimitException(
+                'OpenAI translation local RPM limit reached.',
+                60,
+                isLocal: true,
+            ),
+        );
+
+        $job = new class($row->id) extends TranslateProductFieldJob
+        {
+            public function attempts(): int
+            {
+                return 2;
+            }
+        };
+
+        $job->handle(app(MarketplaceTranslationService::class), $translator);
+
+        $this->assertSame(MarketplaceTranslationStatus::Queued, $row->fresh()->status);
+        $this->assertStringContainsString('retrying later', (string) $row->fresh()->error_message);
+        Queue::assertPushed(TranslateProductFieldJob::class, function (TranslateProductFieldJob $pushed) use ($row): bool {
+            return $pushed->translationId === $row->id && $pushed->delay !== null;
+        });
+    }
+
     public function test_exhausted_retries_marks_failed(): void
     {
         config(['marketplace.translations.retries' => 2]);
@@ -176,7 +250,7 @@ class TranslationsRetryFailedCommandTest extends TestCase
 
         $translator = Mockery::mock(\App\Contracts\Marketplace\MarketplaceTranslatorInterface::class);
         $translator->shouldReceive('providerName')->andReturn('openai');
-        $translator->shouldReceive('translate')->once()->andThrow(new OpenAiRateLimitException('HTTP 429', 10));
+        $translator->shouldReceive('translate')->once()->andThrow(new OpenAiRateLimitException('HTTP 429', 10, isLocal: false));
 
         $job = Mockery::mock(TranslateProductFieldJob::class, [$row->id])->makePartial();
         $job->shouldReceive('attempts')->andReturn(2);
@@ -187,6 +261,30 @@ class TranslationsRetryFailedCommandTest extends TestCase
 
         $this->assertSame(MarketplaceTranslationStatus::Failed, $row->fresh()->status);
         $this->assertStringContainsString('429', (string) $row->fresh()->error_message);
+    }
+
+    public function test_retry_failed_can_requeue_existing_local_rpm_limit_errors(): void
+    {
+        $product = $this->makeProduct();
+        $row = $this->makeFailed(
+            $product,
+            'ebay',
+            'en',
+            'title',
+            'OpenAI translation local RPM limit reached.',
+        );
+
+        Queue::fake();
+
+        $this->artisan('translations:retry-failed', [
+            '--marketplace' => 'ebay',
+            '--locale' => 'en',
+            '--reason' => 'local RPM limit',
+            '--limit' => 100,
+        ])->assertSuccessful();
+
+        $this->assertSame(MarketplaceTranslationStatus::Queued, $row->fresh()->status);
+        Queue::assertPushed(TranslateProductFieldJob::class, 1);
     }
 
     private function makeProduct(string $title = 'Product'): Product

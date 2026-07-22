@@ -60,11 +60,12 @@ class OpenAiMarketplaceTranslator implements MarketplaceTranslatorInterface
             ]);
 
         if ($response->status() === 429) {
-            $retryAfter = (int) ($response->header('Retry-After') ?: 60);
+            $retryAfter = (int) ($response->header('Retry-After') ?: config('marketplace.translations.retry_delay_seconds', 60));
 
             throw new OpenAiRateLimitException(
                 'OpenAI translation request failed with HTTP 429',
                 max(1, $retryAfter),
+                isLocal: false,
             );
         }
 
@@ -92,9 +93,15 @@ class OpenAiMarketplaceTranslator implements MarketplaceTranslatorInterface
         $key = 'marketplace-translation-openai-rpm';
 
         if (RateLimiter::tooManyAttempts($key, $rpm)) {
+            $retryAfter = max(
+                (int) config('marketplace.translations.retry_delay_seconds', 60),
+                RateLimiter::availableIn($key),
+            );
+
             throw new OpenAiRateLimitException(
-                'OpenAI translation local RPM limit reached.',
-                max(1, RateLimiter::availableIn($key)),
+                'OpenAI translation local RPM limit reached, retrying later',
+                max(1, $retryAfter),
+                isLocal: true,
             );
         }
 
