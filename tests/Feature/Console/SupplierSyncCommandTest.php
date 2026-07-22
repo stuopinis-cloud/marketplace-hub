@@ -39,7 +39,7 @@ class SupplierSyncCommandTest extends TestCase
             'Items' => [],
             'Categories' => [],
         ], $supplier->config['request_body'] ?? null);
-        $this->assertSame(Supplier::CONNECTOR_API, $supplier->connector_type);
+        $this->assertSame(Supplier::CONNECTOR_HELIK_API, $supplier->connector_type);
         $this->assertTrue($supplier->sync_enabled);
         $this->assertSame(720, $supplier->sync_interval_minutes);
     }

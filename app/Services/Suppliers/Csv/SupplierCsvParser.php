@@ -63,10 +63,7 @@ class SupplierCsvParser
     private function parseInternal(string $content, Supplier $supplier, ?int $maxRows = null): array
     {
         $skuColumn = SupplierCsvConfig::skuColumn($supplier);
-
-        if ($skuColumn === null) {
-            throw new SupplierCsvParseException('CSV SKU column mapping is required.');
-        }
+        $previewOnly = $skuColumn === null;
 
         $content = $this->normalizeEncoding($content, SupplierCsvConfig::encoding($supplier));
         $lines = $this->splitLines($content);
@@ -132,6 +129,11 @@ class SupplierCsvParser
             }
 
             $parsedDataRows++;
+
+            if ($previewOnly) {
+                continue;
+            }
+
             $sku = trim((string) ($row[$skuColumn] ?? ''));
 
             if ($sku === '') {
@@ -166,7 +168,11 @@ class SupplierCsvParser
             ];
         }
 
-        if ($entries === [] && $skipped === [] && $previewRows === []) {
+        if (! $previewOnly && $entries === [] && $skipped === [] && $previewRows === []) {
+            throw new SupplierCsvParseException('CSV feed did not contain any data rows.');
+        }
+
+        if ($previewOnly && $previewRows === [] && $headers === []) {
             throw new SupplierCsvParseException('CSV feed did not contain any data rows.');
         }
 

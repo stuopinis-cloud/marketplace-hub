@@ -4,6 +4,7 @@ namespace App\Providers\Filament;
 
 use App\Filament\Widgets\ShopifyImportHistoryWidget;
 use App\Filament\Widgets\ShopifyImportStatusWidget;
+use App\Filament\Widgets\SupplierOnboardingHealthWidget;
 use Filament\Http\Middleware\Authenticate;
 use Filament\Http\Middleware\AuthenticateSession;
 use Filament\Http\Middleware\DisableBladeIconComponents;
@@ -42,6 +43,7 @@ class AdminPanelProvider extends PanelProvider
             ->widgets([
                 AccountWidget::class,
                 \App\Filament\Widgets\MarketplaceJobHealthWidget::class,
+                SupplierOnboardingHealthWidget::class,
                 ShopifyImportStatusWidget::class,
                 ShopifyImportHistoryWidget::class,
             ])

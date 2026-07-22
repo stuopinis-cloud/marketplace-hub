@@ -2,33 +2,83 @@
 
 namespace App\Filament\Resources\Suppliers\Pages;
 
-use App\Filament\Resources\Suppliers\Actions\PreviewSupplierCsvAction;
+use App\Filament\Resources\Suppliers\Concerns\MutatesSupplierFormData;
+use App\Filament\Resources\Suppliers\Schemas\SupplierWizardSteps;
 use App\Filament\Resources\Suppliers\SupplierResource;
 use App\Models\Supplier;
+use App\Services\Suppliers\SupplierConnectionTester;
+use App\Services\Suppliers\SupplierDryRunService;
+use App\Services\Suppliers\SupplierFeedPreviewService;
+use App\Services\Suppliers\SupplierOnboardingValidator;
+use App\Services\Sync\MarketplaceJobDispatcher;
 use Filament\Actions\Action;
+use Filament\Actions\ViewAction;
+use Filament\Notifications\Notification;
 use Filament\Resources\Pages\EditRecord;
+use Filament\Resources\Pages\EditRecord\Concerns\HasWizard;
 use Filament\Support\Icons\Heroicon;
-use Illuminate\Support\Facades\Storage;
+use Illuminate\Contracts\View\View;
+use Illuminate\Validation\ValidationException;
 
 class EditSupplier extends EditRecord
 {
+    use HasWizard;
+    use MutatesSupplierFormData;
+
     protected static string $resource = SupplierResource::class;
+
+    /**
+     * @return array<int, \Filament\Schemas\Components\Wizard\Step>
+     */
+    public function getSteps(): array
+    {
+        return SupplierWizardSteps::steps(fn () => $this);
+    }
 
     protected function getHeaderActions(): array
     {
         return [
-            PreviewSupplierCsvAction::make(),
+            ViewAction::make(),
+            Action::make('previewFeed')
+                ->label('Preview feed')
+                ->icon(Heroicon::OutlinedEye)
+                ->modalHeading('Feed preview')
+                ->modalWidth('5xl')
+                ->modalContent(function (): View {
+                    return view(
+                        'filament.resources.suppliers.feed-preview',
+                        $this->buildFeedPreviewData(),
+                    );
+                })
+                ->modalSubmitAction(false)
+                ->modalCancelActionLabel('Close'),
             Action::make('dryRun')
                 ->label('Dry run')
                 ->icon(Heroicon::OutlinedBeaker)
-                ->visible(fn (): bool => $this->isCsvSupplier())
+                ->modalHeading('Dry run results')
+                ->modalWidth('5xl')
+                ->modalContent(function (): View {
+                    return view(
+                        'filament.resources.suppliers.dry-run-result',
+                        app(SupplierDryRunService::class)->run($this->getSupplierRecord()),
+                    );
+                })
+                ->modalSubmitAction(false)
+                ->modalCancelActionLabel('Close'),
+            Action::make('testConnection')
+                ->label('Test connection')
+                ->icon(Heroicon::OutlinedSignal)
                 ->action(function (): void {
-                    $this->runSupplierSync(dryRun: true);
+                    $ok = app(SupplierConnectionTester::class)->test($this->getSupplierRecord());
+
+                    Notification::make()
+                        ->title($ok ? 'Connection successful' : 'Connection failed')
+                        ->{$ok ? 'success' : 'danger'}()
+                        ->send();
                 }),
             Action::make('syncNow')
                 ->label('Sync now')
                 ->icon(Heroicon::OutlinedArrowPath)
-                ->visible(fn (): bool => $this->isCsvSupplier())
                 ->requiresConfirmation()
                 ->action(function (): void {
                     $this->runSupplierSync(dryRun: false);
@@ -42,143 +92,62 @@ class EditSupplier extends EditRecord
      */
     protected function mutateFormDataBeforeSave(array $data): array
     {
-        $token = $data['credential_token'] ?? null;
+        $record = $this->getSupplierRecord();
 
-        if (filled($token) && $token !== '********') {
-            $data['credentials'] = array_merge($this->record->credentials ?? [], [
-                'token' => $token,
-            ]);
-        }
+        $wasSyncEnabled = (bool) $record->sync_enabled;
+        $data = $this->mutateSupplierFormData($data, $record);
 
-        $username = $data['credential_username'] ?? null;
+        // Only re-validate when sync is being turned on for the first time; once
+        // enabled, unrelated edits (e.g. delivery text) should not be blocked by
+        // credential/mapping checks that are unrelated to the fields being changed.
+        if (($data['sync_enabled'] ?? false) && ! $wasSyncEnabled) {
+            $transient = (clone $record);
+            $transient->forceFill($data);
 
-        if (filled($username)) {
-            $data['credentials'] = array_merge($data['credentials'] ?? $this->record->credentials ?? [], [
-                'username' => $username,
-            ]);
-        }
+            $errors = app(SupplierOnboardingValidator::class)->validateForSync($transient);
 
-        $password = $data['credential_password'] ?? null;
-
-        if (filled($password) && $password !== '********') {
-            $data['credentials'] = array_merge($data['credentials'] ?? $this->record->credentials ?? [], [
-                'password' => $password,
-            ]);
-        }
-
-        unset($data['credential_token'], $data['credential_username'], $data['credential_password']);
-
-        // Preserve keys not present on the form (Filament replaces the whole JSON `config` blob).
-        $data['config'] = array_merge(
-            $this->record->config ?? [],
-            is_array($data['config'] ?? null) ? $data['config'] : [],
-        );
-
-        $data = $this->canonicalizeCsvColumnMappings($data);
-
-        $headersJson = data_get($data, 'config.request_headers_json');
-
-        if (is_string($headersJson) && filled($headersJson)) {
-            $decoded = json_decode($headersJson, true);
-
-            if (is_array($decoded)) {
-                $data['config']['request_headers'] = $decoded;
+            if ($errors !== []) {
+                throw ValidationException::withMessages([
+                    'sync_enabled' => $errors,
+                ]);
             }
-        }
-
-        unset($data['config']['request_headers_json']);
-
-        $upload = $data['csv_upload_file'] ?? null;
-        unset($data['csv_upload_file']);
-
-        if (filled($upload)) {
-            $path = is_array($upload) ? (string) reset($upload) : (string) $upload;
-            $storedPath = $this->finalizeCsvUpload($path);
-            $data['config']['uploaded_file_path'] = $storedPath;
-            $data['config']['uploaded_file_name'] = basename($storedPath);
         }
 
         return $data;
     }
 
     /**
-     * Promote any legacy nested mapping paths onto the canonical root-level config keys.
-     *
-     * @param  array<string, mixed>  $data
      * @return array<string, mixed>
      */
-    private function canonicalizeCsvColumnMappings(array $data): array
+    private function buildFeedPreviewData(): array
     {
-        $config = is_array($data['config'] ?? null) ? $data['config'] : [];
-
-        $canonicalKeys = [
-            'csv_sku_column' => ['csv.sku_column', 'csv.columns.sku', 'column_mapping.sku'],
-            'csv_barcode_column' => ['csv.barcode_column', 'csv.columns.barcode', 'column_mapping.barcode'],
-            'csv_stock_column' => ['csv.stock_column', 'csv.columns.stock', 'column_mapping.stock'],
-            'csv_availability_column' => ['csv.availability_column', 'csv.columns.availability', 'column_mapping.availability'],
-            'csv_title_column' => ['csv.title_column', 'csv.columns.title', 'column_mapping.title'],
-            'csv_price_column' => ['csv.price_column', 'csv.columns.price', 'column_mapping.price'],
-            'csv_vendor_column' => ['csv.vendor_column', 'csv.columns.vendor', 'column_mapping.vendor'],
-        ];
-
-        foreach ($canonicalKeys as $canonical => $aliases) {
-            if (filled($config[$canonical] ?? null)) {
-                continue;
-            }
-
-            foreach ($aliases as $alias) {
-                $value = data_get($config, $alias);
-
-                if (filled($value)) {
-                    $config[$canonical] = is_string($value) ? trim($value) : $value;
-                    break;
-                }
-            }
+        try {
+            return app(SupplierFeedPreviewService::class)->preview($this->getSupplierRecord());
+        } catch (\Throwable $exception) {
+            return [
+                'error' => $exception->getMessage(),
+                'type' => $this->getSupplierRecord()->connector_type,
+            ];
         }
-
-        $data['config'] = $config;
-
-        return $data;
-    }
-
-    private function finalizeCsvUpload(string $temporaryPath): string
-    {
-        $disk = Storage::disk('local');
-        $targetDirectory = 'suppliers/csv/'.$this->record->getKey();
-        $filename = basename($temporaryPath);
-        $targetPath = $targetDirectory.'/'.$filename;
-
-        if ($disk->exists($temporaryPath)) {
-            $disk->makeDirectory($targetDirectory);
-            $disk->move($temporaryPath, $targetPath);
-        }
-
-        return $targetPath;
-    }
-
-    private function isCsvSupplier(): bool
-    {
-        $record = $this->getRecord();
-
-        return $record instanceof Supplier
-            && in_array($record->connector_type, [Supplier::CONNECTOR_CSV_URL, Supplier::CONNECTOR_CSV_UPLOAD], true);
     }
 
     private function runSupplierSync(bool $dryRun): void
     {
-        $record = $this->getRecord();
+        $record = $this->getSupplierRecord();
 
-        if (! $record instanceof Supplier || blank($record->code)) {
+        if (blank($record->code)) {
+            Notification::make()->title('Supplier code is missing')->danger()->send();
+
             return;
         }
 
-        $result = app(\App\Services\Sync\MarketplaceJobDispatcher::class)->dispatchSupplierSync(
+        $result = app(MarketplaceJobDispatcher::class)->dispatchSupplierSync(
             (string) $record->code,
             $dryRun,
         );
 
         if ($result->alreadyRunning) {
-            \Filament\Notifications\Notification::make()
+            Notification::make()
                 ->title('Job already running')
                 ->body($result->message)
                 ->warning()
@@ -187,10 +156,18 @@ class EditSupplier extends EditRecord
             return;
         }
 
-        \Filament\Notifications\Notification::make()
+        Notification::make()
             ->title($dryRun ? 'Dry run queued' : 'Supplier sync queued')
             ->body($result->message ?? 'Job started in background.')
             ->success()
             ->send();
+    }
+
+    private function getSupplierRecord(): Supplier
+    {
+        /** @var Supplier $record */
+        $record = $this->getRecord();
+
+        return $record;
     }
 }

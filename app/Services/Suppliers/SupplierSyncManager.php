@@ -6,6 +6,8 @@ use App\Models\Supplier;
 use App\Services\Suppliers\Csv\SupplierCsvConfig;
 use App\Services\Suppliers\Csv\SupplierCsvSupplierImporter;
 use App\Services\Suppliers\Helik\HelikSupplierImporter;
+use App\Services\Suppliers\Json\SupplierJsonConfig;
+use App\Services\Suppliers\Json\SupplierJsonSupplierImporter;
 use App\Services\Suppliers\Mtac\MtacSupplierImporter;
 use App\Services\Suppliers\Xml\SupplierXmlConfig;
 use App\Services\Suppliers\Xml\SupplierXmlSupplierImporter;
@@ -21,6 +23,7 @@ class SupplierSyncManager
         private readonly HelikSupplierImporter $helikImporter,
         private readonly SupplierCsvSupplierImporter $csvImporter,
         private readonly SupplierXmlSupplierImporter $xmlImporter,
+        private readonly SupplierJsonSupplierImporter $jsonImporter,
         private readonly SupplierProvisioner $supplierProvisioner,
     ) {}
 
@@ -30,10 +33,13 @@ class SupplierSyncManager
     public function supportedConnectorTypes(): array
     {
         return [
-            Supplier::CONNECTOR_XML_URL,
-            Supplier::CONNECTOR_API,
             Supplier::CONNECTOR_CSV_URL,
             Supplier::CONNECTOR_CSV_UPLOAD,
+            Supplier::CONNECTOR_XML_URL,
+            Supplier::CONNECTOR_JSON_API,
+            Supplier::CONNECTOR_API,
+            Supplier::CONNECTOR_MTAC,
+            Supplier::CONNECTOR_HELIK_API,
         ];
     }
 
@@ -45,16 +51,16 @@ class SupplierSyncManager
     public function sync(string $supplierCode, ?SupplierSyncOptions $options = null): SupplierSyncResult
     {
         $supplierCode = mb_strtolower($supplierCode);
-
-        if ($supplierCode === Supplier::CODE_MTAC) {
-            $this->supplierProvisioner->ensureMtacSupplier();
-        }
-
-        if ($supplierCode === Supplier::CODE_HELIK) {
-            $this->supplierProvisioner->ensureHelikSupplier();
-        }
-
         $supplier = Supplier::query()->where('code', $supplierCode)->first();
+
+        // Built-in adapters may still be provisioned lazily when syncing by known code.
+        if ($supplier === null && $supplierCode === Supplier::CODE_MTAC) {
+            $supplier = $this->supplierProvisioner->ensureMtacSupplier();
+        }
+
+        if ($supplier === null && $supplierCode === Supplier::CODE_HELIK) {
+            $supplier = $this->supplierProvisioner->ensureHelikSupplier();
+        }
 
         if (! $supplier instanceof Supplier) {
             throw new InvalidArgumentException('Unknown supplier code: '.$supplierCode);
@@ -65,8 +71,11 @@ class SupplierSyncManager
         }
 
         return match ($supplier->connector_type) {
+            Supplier::CONNECTOR_MTAC => $this->mtacImporter->sync($options),
+            Supplier::CONNECTOR_HELIK_API => $this->helikImporter->sync($options),
             Supplier::CONNECTOR_XML_URL => $this->syncXmlUrlSupplier($supplier, $options),
             Supplier::CONNECTOR_API => $this->syncApiSupplier($supplier, $options),
+            Supplier::CONNECTOR_JSON_API => $this->jsonImporter->sync($supplier, $options),
             Supplier::CONNECTOR_CSV_URL, Supplier::CONNECTOR_CSV_UPLOAD => $this->csvImporter->sync($supplier, $options),
             default => throw new InvalidArgumentException('Unsupported supplier connector type: '.$supplier->connector_type),
         };
@@ -83,11 +92,15 @@ class SupplierSyncManager
 
     private function syncApiSupplier(Supplier $supplier, ?SupplierSyncOptions $options): SupplierSyncResult
     {
-        if ($supplier->code !== Supplier::CODE_HELIK) {
-            throw new InvalidArgumentException('Unsupported API supplier: '.$supplier->code);
+        if ($supplier->code === Supplier::CODE_HELIK || $supplier->connector_type === Supplier::CONNECTOR_HELIK_API) {
+            return $this->helikImporter->sync($options);
         }
 
-        return $this->helikImporter->sync($options);
+        if (SupplierJsonConfig::isConfigured($supplier)) {
+            return $this->jsonImporter->sync($supplier, $options);
+        }
+
+        throw new InvalidArgumentException('Unsupported API supplier: '.$supplier->code);
     }
 
     public function syncMtac(?SupplierSyncOptions $options = null): SupplierSyncResult
@@ -146,8 +159,6 @@ class SupplierSyncManager
     }
 
     /**
-     * Enabled suppliers with a supported connector, optionally filtered by code.
-     *
      * @param  list<string>|null  $onlyCodes
      * @return Collection<int, Supplier>
      */
@@ -175,8 +186,6 @@ class SupplierSyncManager
     }
 
     /**
-     * Daily / publication pipeline: sync every enabled supplier that is due.
-     *
      * @return array<int, array{
      *     code: string,
      *     name: string,
@@ -198,8 +207,6 @@ class SupplierSyncManager
     }
 
     /**
-     * Sync all enabled suppliers (used by supplier:sync-all).
-     *
      * @return array<int, array{
      *     code: string,
      *     name: string,
@@ -236,8 +243,6 @@ class SupplierSyncManager
     }
 
     /**
-     * @deprecated Use syncEnabledCsvSuppliers via enabledSuppliers filtering; kept for compatibility.
-     *
      * @return array<int, array{code: string, name: string, result?: SupplierSyncResult, error?: string}>
      */
     public function syncEnabledCsvSuppliers(?SupplierSyncOptions $options = null): array

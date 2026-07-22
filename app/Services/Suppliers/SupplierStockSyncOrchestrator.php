@@ -119,7 +119,7 @@ class SupplierStockSyncOrchestrator
             if (! $options->dryRun && ! $options->isPartialRun()) {
                 $policy = (string) data_get($supplier->config, 'missing_from_feed_policy', 'mark_unavailable');
 
-                if ($policy !== 'ignore') {
+                if (! in_array($policy, ['ignore', 'keep_previous'], true)) {
                     $stats['missing_from_feed'] = $this->markMissingFromFeed($supplier, $seenSupplierProductIds);
                 }
             }

@@ -95,7 +95,15 @@ class SupplierDailySyncSelectionTest extends TestCase
             fn (array $row): bool => isset($row['result'])
         ));
         $this->assertEqualsCanonicalizing(
-            [Supplier::CONNECTOR_XML_URL, Supplier::CONNECTOR_API, Supplier::CONNECTOR_CSV_URL, Supplier::CONNECTOR_CSV_UPLOAD],
+            [
+                Supplier::CONNECTOR_CSV_URL,
+                Supplier::CONNECTOR_CSV_UPLOAD,
+                Supplier::CONNECTOR_XML_URL,
+                Supplier::CONNECTOR_JSON_API,
+                Supplier::CONNECTOR_API,
+                Supplier::CONNECTOR_MTAC,
+                Supplier::CONNECTOR_HELIK_API,
+            ],
             app(SupplierSyncManager::class)->supportedConnectorTypes(),
         );
     }

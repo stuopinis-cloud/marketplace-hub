@@ -2,6 +2,7 @@
 
 namespace App\Services\Automation;
 
+use App\Services\Marketplace\Translations\TranslationQueueService;
 use App\Services\Marketplace\Varle\VarleFeedPublisher;
 use App\Services\Marketplace\Varle\VarleReadinessService;
 use App\Services\Shopify\ShopifyProductImporter;
@@ -17,6 +18,7 @@ class DailyMarketplaceSync
         private readonly VarleReadinessService $readinessService,
         private readonly VarleFeedPublisher $varleFeedPublisher,
         private readonly SyncJobFailedCsvExporter $failedCsvExporter,
+        private readonly TranslationQueueService $translationQueue = new TranslationQueueService,
     ) {}
 
     public function run(
@@ -44,6 +46,18 @@ class DailyMarketplaceSync
                         'Shopify import finished with failed items.',
                         $summary,
                     );
+                }
+
+                if (config('marketplace.translations.auto_queue_missing_translations_for_ebay', false)) {
+                    try {
+                        $queued = $this->translationQueue->queueMissingForMarketplace('ebay', 'en');
+                        $summary['ebay_translations_queued'] = $queued;
+                    } catch (Throwable $exception) {
+                        $summary['ebay_translations_queued'] = [
+                            'error' => $exception->getMessage(),
+                        ];
+                        $warnings[] = 'Failed to queue eBay translations: '.$exception->getMessage();
+                    }
                 }
             }
 

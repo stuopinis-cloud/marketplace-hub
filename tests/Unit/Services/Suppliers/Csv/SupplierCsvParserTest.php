@@ -105,12 +105,25 @@ class SupplierCsvParserTest extends TestCase
         $this->assertCount(1, $parsed['entries']);
     }
 
-    public function test_sku_column_mapping_is_required(): void
+    public function test_sku_column_mapping_is_required_for_entry_parsing(): void
     {
         $supplier = $this->makeSupplier([]);
 
-        $this->expectException(SupplierCsvParseException::class);
-        $this->parser()->parse("sku,qty\nA,1\n", $supplier);
+        $parsed = $this->parser()->parse("sku,qty\nA,1\n", $supplier);
+
+        $this->assertSame(['sku', 'qty'], $parsed['headers']);
+        $this->assertCount(1, $parsed['preview_rows']);
+        $this->assertSame([], $parsed['entries']);
+    }
+
+    public function test_sync_importer_requires_sku_column(): void
+    {
+        $supplier = $this->makeSupplier([]);
+
+        $this->expectException(\RuntimeException::class);
+        $this->expectExceptionMessage('CSV SKU column mapping is required.');
+
+        app(\App\Services\Suppliers\Csv\SupplierCsvSupplierImporter::class)->sync($supplier);
     }
 
     public function test_auto_detects_semicolon_delimiter(): void

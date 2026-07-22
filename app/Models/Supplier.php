@@ -2,6 +2,7 @@
 
 namespace App\Models;
 
+use App\Models\Relations\SupplierSyncJobsRelation;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\HasMany;
 
@@ -17,9 +18,15 @@ class Supplier extends Model
 
     public const string CONNECTOR_API = 'api';
 
+    public const string CONNECTOR_JSON_API = 'json_api';
+
     public const string CONNECTOR_CSV_URL = 'csv_url';
 
     public const string CONNECTOR_CSV_UPLOAD = 'csv_upload';
+
+    public const string CONNECTOR_MTAC = 'mtac';
+
+    public const string CONNECTOR_HELIK_API = 'helik_api';
 
     public const string AUTH_NONE = 'none';
 
@@ -74,6 +81,21 @@ class Supplier extends Model
     public function supplierProducts(): HasMany
     {
         return $this->hasMany(SupplierProduct::class);
+    }
+
+    /**
+     * SyncJob rows created for this supplier's imports. There is no foreign key;
+     * jobs are matched by the `supplier:{connector}:{code}` / `supplier:{code}`
+     * convention used by the supplier importers.
+     */
+    public function syncJobs(): SupplierSyncJobsRelation
+    {
+        return new SupplierSyncJobsRelation(
+            SyncJob::query()->orderByDesc('started_at'),
+            $this,
+            'source',
+            'code',
+        );
     }
 
     public function isStockStale(?\Illuminate\Support\Carbon $lastSyncedAt): bool

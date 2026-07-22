@@ -9,6 +9,7 @@ use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Illuminate\Database\Eloquent\Relations\BelongsToMany;
 use Illuminate\Database\Eloquent\Relations\HasMany;
 use Illuminate\Database\Eloquent\Relations\HasManyThrough;
+use Illuminate\Database\Eloquent\Relations\MorphMany;
 
 class Product extends Model
 {
@@ -81,6 +82,11 @@ class Product extends Model
     public function inventoryLevels(): HasManyThrough
     {
         return $this->hasManyThrough(InventoryLevel::class, ProductVariant::class, 'product_id', 'variant_id');
+    }
+
+    public function marketplaceTranslations(): MorphMany
+    {
+        return $this->morphMany(MarketplaceTranslation::class, 'translatable');
     }
 
     public function marketplaceListings(): HasMany

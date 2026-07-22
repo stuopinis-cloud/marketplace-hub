@@ -7,6 +7,7 @@ use App\Filament\Resources\Products\Pages\EditProduct;
 use App\Filament\Resources\Products\Pages\ListProducts;
 use App\Filament\Resources\Products\RelationManagers\ImagesRelationManager;
 use App\Filament\Resources\Products\RelationManagers\InventoryLevelsRelationManager;
+use App\Filament\Resources\Products\RelationManagers\MarketplaceTranslationsRelationManager;
 use App\Filament\Resources\Products\RelationManagers\SourceCategoriesRelationManager;
 use App\Filament\Resources\Products\RelationManagers\VariantsRelationManager;
 use App\Filament\Resources\Products\Schemas\ProductForm;
@@ -48,6 +49,7 @@ class ProductResource extends Resource
             ImagesRelationManager::class,
             InventoryLevelsRelationManager::class,
             SourceCategoriesRelationManager::class,
+            MarketplaceTranslationsRelationManager::class,
         ];
     }
 
