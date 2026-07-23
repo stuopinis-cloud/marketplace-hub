@@ -17,13 +17,12 @@ class EbayExportXmlCommand extends Command
         $locale = (string) $this->option('locale');
         $result = $exporter->export($locale);
 
-        $this->components->info(sprintf(
-            'eBay feed exported to %s (%d products, %d variants, %d skipped).',
-            $result['feed_path'],
-            $result['exported_products'],
-            $result['exported_variants'],
-            $result['skipped_products'],
-        ));
+        $this->components->info('eBay feed export completed.');
+        $this->line('Public path: '.$result['absolute_path']);
+        $this->line('Public URL: '.$result['public_url']);
+        $this->line('Exported products: '.$result['exported_products']);
+        $this->line('Exported variants: '.$result['exported_variants']);
+        $this->line('Skipped products: '.$result['skipped_products']);
 
         return self::SUCCESS;
     }

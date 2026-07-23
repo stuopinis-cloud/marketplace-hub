@@ -13,6 +13,7 @@ Route::get('/', function () {
 Route::get('/health', HealthController::class);
 
 Route::get('/feeds/varle.xml', [PublicFeedController::class, 'varle']);
+Route::get('/feeds/ebay-en.xml', [PublicFeedController::class, 'ebay']);
 
 Route::middleware('auth')->get(
     '/exports/varle-failed/{syncJobId}.csv',

@@ -157,7 +157,7 @@ class MarketplaceTranslationServiceTest extends TestCase
         ]);
 
         $result = app(EbayFeedExporter::class)->export('en');
-        $xml = \Illuminate\Support\Facades\Storage::disk('local')->get($result['feed_path']);
+        $xml = \Illuminate\Support\Facades\Storage::disk('public')->get($result['feed_path']);
 
         $this->assertStringContainsString('Tactical Backpack', $xml);
         $this->assertStringContainsString('<![CDATA[<p>Description</p>]]>', $xml);
@@ -171,7 +171,7 @@ class MarketplaceTranslationServiceTest extends TestCase
         $product = $this->makeProduct('Title');
         $this->makeVariant($product, 'Size', 'L', 'KEEP-SKU', '111');
 
-        $xml = \Illuminate\Support\Facades\Storage::disk('local')->get(
+        $xml = \Illuminate\Support\Facades\Storage::disk('public')->get(
             app(EbayFeedExporter::class)->export('en')['feed_path'],
         );
 

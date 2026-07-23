@@ -33,4 +33,15 @@ class PublicFeedControllerTest extends TestCase
 
         $this->get('/feeds/varle.xml')->assertNotFound();
     }
+
+    public function test_ebay_public_feed_route_returns_xml(): void
+    {
+        Storage::disk('public')->put('feeds/ebay-en.xml', '<?xml version="1.0"?><ebayFeed/>');
+
+        $response = $this->get('/feeds/ebay-en.xml');
+
+        $response->assertOk();
+        $response->assertHeader('Content-Type', 'application/xml; charset=UTF-8');
+        $response->assertSee('<ebayFeed', false);
+    }
 }

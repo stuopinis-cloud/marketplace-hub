@@ -20,6 +20,8 @@ class EbayFeedExporter
      * @return array{
      *     channel_id: int,
      *     feed_path: string,
+     *     absolute_path: string,
+     *     public_url: string,
      *     exported_products: int,
      *     exported_variants: int,
      *     skipped_products: int
@@ -102,15 +104,23 @@ class EbayFeedExporter
                 }
             });
 
-        $disk = Storage::disk('local');
-        $disk->makeDirectory(dirname($relativePath));
+        $disk = Storage::disk('public');
+        $disk->makeDirectory('feeds');
         $tempPath = (string) config('marketplace.exports.ebay.feed_temp_path', $relativePath.'.tmp');
         $disk->put($tempPath, $xml->asXML() ?: '');
         $disk->move($tempPath, $relativePath);
 
+        $publicUrl = (string) (
+            data_get($channel->config, 'public_url')
+            ?: config('marketplace.exports.ebay.public_url')
+            ?: url('/feeds/'.basename($relativePath))
+        );
+
         return [
             'channel_id' => $channel->id,
             'feed_path' => $relativePath,
+            'absolute_path' => storage_path('app/public/'.$relativePath),
+            'public_url' => $publicUrl,
             'exported_products' => $exportedProducts,
             'exported_variants' => $exportedVariants,
             'skipped_products' => $skippedProducts,
