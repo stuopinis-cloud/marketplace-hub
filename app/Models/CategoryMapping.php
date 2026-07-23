@@ -12,6 +12,8 @@ class CategoryMapping extends Model
         'source_type',
         'source_value',
         'target_category_path',
+        'target_category_id',
+        'target_category_name',
         'priority',
         'enabled',
         'export_enabled',

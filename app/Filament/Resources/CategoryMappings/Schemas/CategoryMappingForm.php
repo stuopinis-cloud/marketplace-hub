@@ -2,6 +2,7 @@
 
 namespace App\Filament\Resources\CategoryMappings\Schemas;
 
+use App\Models\MarketplaceChannel;
 use App\Models\SourceCategory;
 use Filament\Forms\Components\Select;
 use Filament\Forms\Components\TextInput;
@@ -20,7 +21,8 @@ class CategoryMappingForm
                     ->relationship('marketplaceChannel', 'name')
                     ->searchable()
                     ->preload()
-                    ->required(),
+                    ->required()
+                    ->live(),
                 Select::make('source_type')
                     ->options([
                         'collection' => 'Collection',
@@ -87,10 +89,33 @@ class CategoryMappingForm
                         : ($get('source_type') === 'manual'
                             ? 'Enter the exact product.category value to match.'
                             : 'For Shopify collections, enter either the collection name (e.g. "Pirštinės") or handle (e.g. "pirstines"). For product type or tag mappings, enter the exact Shopify value.')),
-                TextInput::make('target_category_path')
-                    ->required()
+                TextInput::make('target_category_id')
+                    ->label('Pigu category ID')
+                    ->numeric()
+                    ->required(fn (Get $get): bool => self::isPiguChannel($get))
+                    ->visible(fn (Get $get): bool => self::isPiguChannel($get))
+                    ->helperText('Lowest/specific Pigu category ID from the PHH category catalog.')
+                    ->live(onBlur: true)
+                    ->afterStateUpdated(fn (Get $get, Set $set) => self::syncPiguTargetPath($get, $set)),
+                TextInput::make('target_category_name')
+                    ->label('Pigu category name')
                     ->maxLength(255)
-                    ->helperText('Example: Taktinė ekipuotė -> Šarvinės liemenės'),
+                    ->required(fn (Get $get): bool => self::isPiguChannel($get))
+                    ->visible(fn (Get $get): bool => self::isPiguChannel($get))
+                    ->helperText('Lowest/specific Pigu category title (as shown in PMP).')
+                    ->live(onBlur: true)
+                    ->afterStateUpdated(fn (Get $get, Set $set) => self::syncPiguTargetPath($get, $set)),
+                TextInput::make('target_category_path')
+                    ->label(fn (Get $get): string => self::isPiguChannel($get)
+                        ? 'Target category path (auto)'
+                        : 'Target category path')
+                    ->required(fn (Get $get): bool => ! self::isPiguChannel($get))
+                    ->maxLength(255)
+                    ->helperText(fn (Get $get): string => self::isPiguChannel($get)
+                        ? 'Auto-filled as "{id}|{name}" for Pigu. You can leave this as-is.'
+                        : 'Example: Taktinė ekipuotė -> Šarvinės liemenės')
+                    ->disabled(fn (Get $get): bool => self::isPiguChannel($get))
+                    ->dehydrated(),
                 TextInput::make('priority')
                     ->numeric()
                     ->default(100)
@@ -101,7 +126,9 @@ class CategoryMappingForm
                 Toggle::make('export_enabled')
                     ->label('Export enabled')
                     ->default(true)
-                    ->helperText('When disabled, auto products mapped to this category are skipped from Varle XML.'),
+                    ->helperText(fn (Get $get): string => self::isPiguChannel($get)
+                        ? 'When disabled, products mapped to this Pigu category are skipped from the Pigu XML feed.'
+                        : 'When disabled, auto products mapped to this category are skipped from Varle XML.'),
             ]);
     }
 
@@ -117,5 +144,35 @@ class CategoryMappingForm
         }
 
         return self::usesSourceCategoryPicker($get) && (bool) $get('use_manual_source_value');
+    }
+
+    public static function isPiguChannel(Get $get): bool
+    {
+        $channelId = $get('marketplace_channel_id');
+
+        if (blank($channelId)) {
+            return false;
+        }
+
+        return MarketplaceChannel::query()
+            ->whereKey($channelId)
+            ->where('type', 'pigu')
+            ->exists();
+    }
+
+    public static function syncPiguTargetPath(Get $get, Set $set): void
+    {
+        if (! self::isPiguChannel($get)) {
+            return;
+        }
+
+        $id = trim((string) ($get('target_category_id') ?? ''));
+        $name = trim((string) ($get('target_category_name') ?? ''));
+
+        if ($id === '' || $name === '') {
+            return;
+        }
+
+        $set('target_category_path', $id.'|'.$name);
     }
 }

@@ -132,4 +132,77 @@ class CategoryMappingFormTest extends TestCase
 
         $this->assertSame(0, CategoryMapping::query()->count());
     }
+
+    public function test_pigu_mapping_form_has_category_id_and_name_fields(): void
+    {
+        $channel = MarketplaceChannel::query()->create([
+            'name' => 'Pigu / PHH',
+            'type' => 'pigu',
+            'enabled' => true,
+            'config' => [],
+        ]);
+
+        Livewire::test(CreateCategoryMapping::class)
+            ->fillForm([
+                'marketplace_channel_id' => $channel->id,
+                'source_type' => 'manual',
+            ])
+            ->assertFormFieldExists('target_category_id')
+            ->assertFormFieldExists('target_category_name')
+            ->assertFormFieldIsVisible('target_category_id')
+            ->assertFormFieldIsVisible('target_category_name');
+    }
+
+    public function test_pigu_mapping_saves_category_id_and_name(): void
+    {
+        $channel = MarketplaceChannel::query()->create([
+            'name' => 'Pigu / PHH',
+            'type' => 'pigu',
+            'enabled' => true,
+            'config' => [],
+        ]);
+
+        Livewire::test(CreateCategoryMapping::class)
+            ->fillForm([
+                'marketplace_channel_id' => $channel->id,
+                'source_type' => 'manual',
+                'source_value' => 'Vyriškos kelnės',
+                'target_category_id' => '1268',
+                'target_category_name' => 'Vyriškos kelnės',
+                'priority' => 100,
+                'enabled' => true,
+                'export_enabled' => true,
+            ])
+            ->call('create')
+            ->assertHasNoFormErrors();
+
+        $mapping = CategoryMapping::query()->firstOrFail();
+        $this->assertSame('1268', (string) $mapping->target_category_id);
+        $this->assertSame('Vyriškos kelnės', $mapping->target_category_name);
+        $this->assertSame('1268|Vyriškos kelnės', $mapping->target_category_path);
+    }
+
+    public function test_pigu_mapping_requires_category_id_and_name(): void
+    {
+        $channel = MarketplaceChannel::query()->create([
+            'name' => 'Pigu / PHH',
+            'type' => 'pigu',
+            'enabled' => true,
+            'config' => [],
+        ]);
+
+        Livewire::test(CreateCategoryMapping::class)
+            ->fillForm([
+                'marketplace_channel_id' => $channel->id,
+                'source_type' => 'manual',
+                'source_value' => 'Vyriškos kelnės',
+                'priority' => 100,
+                'enabled' => true,
+                'export_enabled' => true,
+            ])
+            ->call('create')
+            ->assertHasFormErrors(['target_category_id', 'target_category_name']);
+
+        $this->assertSame(0, CategoryMapping::query()->count());
+    }
 }

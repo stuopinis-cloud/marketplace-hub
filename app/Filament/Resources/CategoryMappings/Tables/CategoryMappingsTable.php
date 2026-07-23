@@ -15,6 +15,7 @@ class CategoryMappingsTable
     public static function configure(Table $table): Table
     {
         return $table
+            ->modifyQueryUsing(fn ($query) => $query->with('marketplaceChannel'))
             ->columns([
                 TextColumn::make('marketplaceChannel.name')
                     ->label('Marketplace channel')
@@ -31,8 +32,40 @@ class CategoryMappingsTable
                     ->numeric()
                     ->getStateUsing(fn (CategoryMapping $record): int => app(CategoryResolver::class)->countMatchingProducts($record)),
                 TextColumn::make('target_category_path')
+                    ->label('Target category path')
                     ->searchable()
-                    ->wrap(),
+                    ->wrap()
+                    ->placeholder('—')
+                    ->formatStateUsing(function (?string $state, CategoryMapping $record): ?string {
+                        if ($record->marketplaceChannel?->type === 'pigu') {
+                            return null;
+                        }
+
+                        return $state;
+                    }),
+                TextColumn::make('target_category_id')
+                    ->label('Pigu category ID')
+                    ->searchable()
+                    ->placeholder('—')
+                    ->formatStateUsing(function (?string $state, CategoryMapping $record): ?string {
+                        if ($record->marketplaceChannel?->type !== 'pigu') {
+                            return null;
+                        }
+
+                        return $state;
+                    }),
+                TextColumn::make('target_category_name')
+                    ->label('Pigu category name')
+                    ->searchable()
+                    ->wrap()
+                    ->placeholder('—')
+                    ->formatStateUsing(function (?string $state, CategoryMapping $record): ?string {
+                        if ($record->marketplaceChannel?->type !== 'pigu') {
+                            return null;
+                        }
+
+                        return $state;
+                    }),
                 TextColumn::make('priority')
                     ->sortable(),
                 IconColumn::make('enabled')

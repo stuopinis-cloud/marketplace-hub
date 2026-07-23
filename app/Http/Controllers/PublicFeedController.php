@@ -23,7 +23,10 @@ class PublicFeedController extends Controller
         return response(
             Storage::disk('public')->get($relativePath),
             200,
-            ['Content-Type' => 'application/xml; charset=UTF-8'],
+            [
+                'Content-Type' => 'application/xml; charset=UTF-8',
+                'Cache-Control' => 'public, max-age=300',
+            ],
         );
     }
 
@@ -42,7 +45,32 @@ class PublicFeedController extends Controller
         return response(
             Storage::disk('public')->get($relativePath),
             200,
-            ['Content-Type' => 'application/xml; charset=UTF-8'],
+            [
+                'Content-Type' => 'application/xml; charset=UTF-8',
+                'Cache-Control' => 'public, max-age=300',
+            ],
+        );
+    }
+
+    public function pigu(): Response
+    {
+        $relativePath = FeedFile::query()
+            ->whereHas('marketplaceChannel', fn ($query) => $query->where('type', 'pigu'))
+            ->latest('generated_at')
+            ->value('path')
+            ?? config('marketplace.exports.pigu.feed_path', 'feeds/pigu-products.xml');
+
+        if (! Storage::disk('public')->exists($relativePath)) {
+            abort(404, 'Pigu feed not found.');
+        }
+
+        return response(
+            Storage::disk('public')->get($relativePath),
+            200,
+            [
+                'Content-Type' => 'application/xml; charset=UTF-8',
+                'Cache-Control' => 'public, max-age=300',
+            ],
         );
     }
 }

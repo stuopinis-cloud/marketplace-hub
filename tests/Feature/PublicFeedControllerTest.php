@@ -44,4 +44,16 @@ class PublicFeedControllerTest extends TestCase
         $response->assertHeader('Content-Type', 'application/xml; charset=UTF-8');
         $response->assertSee('<ebayFeed', false);
     }
+
+    public function test_pigu_public_feed_route_returns_xml(): void
+    {
+        Storage::disk('public')->put('feeds/pigu-products.xml', '<?xml version="1.0"?><products/>');
+
+        $response = $this->get('/feeds/pigu-products.xml');
+
+        $response->assertOk();
+        $response->assertHeader('Content-Type', 'application/xml; charset=UTF-8');
+        $response->assertHeader('Cache-Control', 'max-age=300, public');
+        $response->assertSee('<products', false);
+    }
 }
