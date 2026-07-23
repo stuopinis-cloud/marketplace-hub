@@ -264,7 +264,8 @@ class CategoryResolver
     {
         foreach ($product->sourceCategories->where('type', 'collection') as $sourceCategory) {
             if ($this->valuesMatch($mappingValue, $sourceCategory->name)
-                || $this->valuesMatch($mappingValue, $sourceCategory->handle)) {
+                || $this->valuesMatch($mappingValue, $sourceCategory->handle)
+                || $this->valuesMatch($mappingValue, $sourceCategory->external_id)) {
                 return $sourceCategory;
             }
         }
@@ -282,7 +283,9 @@ class CategoryResolver
         }
 
         foreach ($product->sourceCategories->where('type', 'product_type') as $sourceCategory) {
-            if ($this->valuesMatch($mappingValue, $sourceCategory->name)) {
+            if ($this->valuesMatch($mappingValue, $sourceCategory->name)
+                || $this->valuesMatch($mappingValue, $sourceCategory->handle)
+                || $this->valuesMatch($mappingValue, $sourceCategory->external_id)) {
                 return $sourceCategory;
             }
         }
@@ -296,7 +299,9 @@ class CategoryResolver
     private function matchTag(Product $product, string $mappingValue): SourceCategory|false
     {
         foreach ($product->sourceCategories->where('type', 'tag') as $sourceCategory) {
-            if ($this->valuesMatch($mappingValue, $sourceCategory->name)) {
+            if ($this->valuesMatch($mappingValue, $sourceCategory->name)
+                || $this->valuesMatch($mappingValue, $sourceCategory->handle)
+                || $this->valuesMatch($mappingValue, $sourceCategory->external_id)) {
                 return $sourceCategory;
             }
         }

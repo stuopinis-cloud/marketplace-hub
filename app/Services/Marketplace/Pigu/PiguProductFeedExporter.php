@@ -138,17 +138,27 @@ class PiguProductFeedExporter
 
     public function resolveChannel(): MarketplaceChannel
     {
-        return MarketplaceChannel::query()->firstOrCreate(
-            ['type' => 'pigu', 'name' => 'Pigu'],
+        $defaults = [
+            'feed_path' => config('marketplace.exports.pigu.feed_path', 'feeds/pigu-products.xml'),
+            'require_category_mapping' => config('marketplace.exports.pigu.require_category_mapping', true),
+            'allow_fallback_product_images' => config('marketplace.exports.pigu.allow_fallback_product_images', true),
+        ];
+
+        $channel = MarketplaceChannel::query()->firstOrCreate(
+            ['type' => 'pigu'],
             [
+                'name' => 'Pigu / PHH',
                 'enabled' => true,
-                'config' => [
-                    'feed_path' => config('marketplace.exports.pigu.feed_path', 'feeds/pigu-products.xml'),
-                    'require_category_mapping' => config('marketplace.exports.pigu.require_category_mapping', true),
-                    'allow_fallback_product_images' => config('marketplace.exports.pigu.allow_fallback_product_images', true),
-                ],
+                'config' => $defaults,
             ],
         );
+
+        if (! $channel->enabled) {
+            $channel->update(['enabled' => true]);
+            $channel->refresh();
+        }
+
+        return $channel;
     }
 
     /**
@@ -176,7 +186,14 @@ class PiguProductFeedExporter
 
         if (! $readiness['exportable']) {
             foreach ($readiness['issues'] as $issue) {
-                $this->skip($product, null, $issue['code'], $issue['message']);
+                $this->skip(
+                    $product,
+                    null,
+                    $issue['code'],
+                    $issue['message'],
+                    $issue['severity'] ?? 'error',
+                    $readiness['debug'] ?? [],
+                );
             }
 
             return [
@@ -655,38 +672,81 @@ class PiguProductFeedExporter
             return;
         }
 
-        fputcsv($handle, ['product_id', 'variant_id', 'sku', 'barcode', 'code', 'message', 'severity']);
+        fputcsv($handle, [
+            'product_id',
+            'handle',
+            'title',
+            'variant_id',
+            'sku',
+            'barcode',
+            'code',
+            'message',
+            'severity',
+            'marketplace_channel_id',
+            'mapping_matched',
+            'source_categories',
+        ]);
 
         foreach ($this->skippedRows as $row) {
             fputcsv($handle, [
                 $row['product_id'],
+                $row['handle'] ?? null,
+                $row['title'] ?? null,
                 $row['variant_id'],
                 $row['sku'],
                 $row['barcode'],
                 $row['code'],
                 $row['message'],
                 $row['severity'],
+                $row['debug']['marketplace_channel_id'] ?? null,
+                isset($row['debug']['mapping_matched']) ? (($row['debug']['mapping_matched'] ? 'yes' : 'no')) : null,
+                $this->formatSourceCategoriesForCsv($row['debug']['source_categories'] ?? []),
             ]);
         }
 
         fclose($handle);
     }
 
+    /**
+     * @param  list<array<string, mixed>>  $categories
+     */
+    private function formatSourceCategoriesForCsv(array $categories): string
+    {
+        return collect($categories)
+            ->map(function (array $category): string {
+                return sprintf(
+                    '%s:%s/%s/%s',
+                    $category['type'] ?? '',
+                    $category['handle'] ?? '',
+                    $category['name'] ?? '',
+                    $category['external_id'] ?? '',
+                );
+            })
+            ->implode('; ');
+    }
+
+    /**
+     * @param  array<string, mixed>  $debug
+     */
     private function skip(
         Product $product,
         ?ProductVariant $variant,
         string $code,
         string $message,
         string $severity = 'error',
+        array $debug = [],
     ): void {
         $this->skippedRows[] = [
             'product_id' => $product->id,
+            'handle' => $product->handle,
+            'title' => $product->title,
             'variant_id' => $variant?->id,
             'sku' => $variant?->sku,
             'barcode' => $variant?->barcode,
             'code' => $code,
             'message' => $message,
             'severity' => $severity,
+            'debug' => $debug,
         ];
     }
 

@@ -9,6 +9,7 @@ use App\Models\MarketplaceTranslation;
 use App\Models\PiguCategoryField;
 use App\Models\Product;
 use App\Models\ProductVariant;
+use App\Models\SourceCategory;
 use App\Services\Marketplace\CategoryResolver;
 use App\Services\Marketplace\ProductAvailabilityResolver;
 use App\Services\Marketplace\Translations\MarketplaceTranslationService;
@@ -29,7 +30,8 @@ class PiguReadinessService
      *     issues: list<array{code: string, message: string, severity: string}>,
      *     category_id: ?string,
      *     category_name: ?string,
-     *     warnings: list<string>
+     *     warnings: list<string>,
+     *     debug: array<string, mixed>
      * }
      */
     public function analyzeProduct(Product $product, MarketplaceChannel $channel): array
@@ -38,6 +40,7 @@ class PiguReadinessService
         $warnings = [];
 
         $category = $this->resolvePiguCategory($product, $channel);
+        $debug = $category['debug'];
 
         if ($category['id'] === null || $category['name'] === null) {
             $issues[] = $this->issue('missing_pigu_category_mapping', 'Product is missing a Pigu category mapping.');
@@ -82,26 +85,74 @@ class PiguReadinessService
             'category_id' => $category['id'],
             'category_name' => $category['name'],
             'warnings' => $warnings,
+            'debug' => $debug,
         ];
     }
 
     /**
-     * @return array{id: ?string, name: ?string, mapping: ?CategoryMapping}
+     * @return array{
+     *     id: ?string,
+     *     name: ?string,
+     *     mapping: ?CategoryMapping,
+     *     debug: array<string, mixed>
+     * }
      */
     public function resolvePiguCategory(Product $product, MarketplaceChannel $channel): array
     {
+        $product->loadMissing('sourceCategories');
+
+        $sourceCategories = $product->sourceCategories->map(fn (SourceCategory $category): array => [
+            'id' => $category->id,
+            'type' => $category->type,
+            'name' => $category->name,
+            'handle' => $category->handle,
+            'external_id' => $category->external_id,
+        ])->values()->all();
+
         $explained = $this->categories->explain($product, $channel);
         $mappingId = $explained['matched_mapping_id'] ?? null;
 
+        $debug = [
+            'marketplace_channel_id' => $channel->id,
+            'marketplace_channel_name' => $channel->name,
+            'source_categories' => $sourceCategories,
+            'mapping_matched' => $mappingId !== null,
+            'matched_mapping_id' => $mappingId,
+            'matched_source_type' => $explained['matched_source_type'] ?? null,
+            'matched_source_value' => $explained['matched_source_value'] ?? null,
+            'resolver_source' => $explained['source'] ?? null,
+            'export_enabled' => null,
+        ];
+
         if ($mappingId === null) {
-            return ['id' => null, 'name' => null, 'mapping' => null];
+            $debug['available_mappings'] = CategoryMapping::query()
+                ->where('marketplace_channel_id', $channel->id)
+                ->where('enabled', true)
+                ->get(['id', 'source_type', 'source_value', 'export_enabled', 'target_category_id', 'target_category_name'])
+                ->map(fn (CategoryMapping $mapping): array => [
+                    'id' => $mapping->id,
+                    'source_type' => $mapping->source_type,
+                    'source_value' => $mapping->source_value,
+                    'export_enabled' => $mapping->export_enabled,
+                    'target_category_id' => $mapping->target_category_id,
+                    'target_category_name' => $mapping->target_category_name,
+                ])
+                ->all();
+
+            return ['id' => null, 'name' => null, 'mapping' => null, 'debug' => $debug];
         }
 
         $mapping = CategoryMapping::query()->find($mappingId);
 
         if ($mapping === null || $mapping->export_enabled === false) {
-            return ['id' => null, 'name' => null, 'mapping' => null];
+            $debug['export_enabled'] = $mapping?->export_enabled;
+            $debug['mapping_matched'] = false;
+            $debug['ignored_reason'] = $mapping === null ? 'mapping_missing' : 'export_disabled';
+
+            return ['id' => null, 'name' => null, 'mapping' => null, 'debug' => $debug];
         }
+
+        $debug['export_enabled'] = true;
 
         $id = filled($mapping->target_category_id) ? (string) $mapping->target_category_id : null;
         $name = filled($mapping->target_category_name) ? (string) $mapping->target_category_name : null;
@@ -115,7 +166,7 @@ class PiguReadinessService
             $name ??= trim($matches[2]);
         }
 
-        return ['id' => $id, 'name' => $name, 'mapping' => $mapping];
+        return ['id' => $id, 'name' => $name, 'mapping' => $mapping, 'debug' => $debug];
     }
 
     public function usableEnglishTranslation(Product $product, string $field): ?string

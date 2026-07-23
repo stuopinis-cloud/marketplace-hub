@@ -84,6 +84,31 @@ class CategoryResolverTest extends TestCase
         $this->assertSame('Mapped By Handle', $this->resolver->resolve($product, $this->channel));
     }
 
+    public function test_collection_mapping_matches_by_external_id(): void
+    {
+        $product = $this->createProductWithSourceCategories([
+            'product_type' => 'Kelnės',
+        ], [
+            [
+                'type' => 'collection',
+                'name' => 'Kelnės vyrams',
+                'handle' => 'kelnes-vyrams',
+                'external_id' => 'gid://shopify/Collection/118',
+            ],
+        ]);
+
+        CategoryMapping::query()->create([
+            'marketplace_channel_id' => $this->channel->id,
+            'source_type' => 'collection',
+            'source_value' => 'gid://shopify/Collection/118',
+            'target_category_path' => 'Mapped By External Id',
+            'priority' => 100,
+            'enabled' => true,
+        ]);
+
+        $this->assertSame('Mapped By External Id', $this->resolver->resolve($product, $this->channel));
+    }
+
     public function test_mapping_has_priority_over_product_category(): void
     {
         $product = $this->createProductWithSourceCategories([
