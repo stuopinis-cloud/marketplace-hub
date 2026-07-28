@@ -2,12 +2,16 @@
 
 namespace App\Services\Marketplace\Pigu;
 
+use App\Models\CategoryMapping;
 use App\Models\MarketplaceChannel;
 use App\Models\MarketplaceTranslation;
 use App\Models\PiguCategoryField;
+use App\Models\PiguDimensionRule;
+use App\Models\PiguPropertyRule;
 use App\Models\Product;
 use App\Models\ProductVariant;
 use App\Services\Marketplace\Varle\VarleVariantPresenter;
+use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Support\Facades\File;
 use Illuminate\Support\Facades\Storage;
 use RuntimeException;
@@ -16,6 +20,9 @@ class PiguProductFeedExporter
 {
     /** @var list<array<string, mixed>> */
     private array $skippedRows = [];
+
+    /** @var list<array{product_id: int, handle: ?string, title: ?string, chosen_source_handle: ?string, chosen_category_id: ?string, easy_only_allowed: bool}> */
+    private array $exportResolutions = [];
 
     /** @var array<string, int> */
     private array $seenBarcodes = [];
@@ -26,6 +33,7 @@ class PiguProductFeedExporter
     public function __construct(
         private readonly PiguReadinessService $readiness,
         private readonly PiguDescriptionSanitizer $sanitizer,
+        private readonly PiguRuleResolver $rules = new PiguRuleResolver,
     ) {}
 
     /**
@@ -34,16 +42,23 @@ class PiguProductFeedExporter
      *     feed_path: string,
      *     absolute_path: string,
      *     public_url: string,
+     *     products_considered: int,
      *     exported_products: int,
      *     exported_modifications: int,
      *     skipped_products: int,
      *     skipped_modifications: int,
-     *     skipped_rows: list<array<string, mixed>>
+     *     skipped_by_code: array<string, int>,
+     *     skipped_by_source_category: array<string, int>,
+     *     filter: array{easy_only: bool, mapped_only: bool, collection: ?string},
+     *     skipped_rows: list<array<string, mixed>>,
+     *     export_resolutions: list<array{product_id: int, handle: ?string, title: ?string, chosen_source_handle: ?string, chosen_category_id: ?string, easy_only_allowed: bool}>
      * }
      */
-    public function export(): array
+    public function export(?PiguExportOptions $options = null): array
     {
+        $options ??= new PiguExportOptions;
         $this->skippedRows = [];
+        $this->exportResolutions = [];
         $this->seenBarcodes = [];
         $this->seenSupplierCodes = [];
 
@@ -52,6 +67,10 @@ class PiguProductFeedExporter
         $relativePath = (string) $config['feed_path'];
         $tempPath = (string) $config['feed_temp_path'];
 
+        $easyEligibleHandles = $options->easyOnly
+            ? $this->easyOnlyCollectionHandles($channel)
+            : null;
+
         $disk = Storage::disk('public');
         $disk->makeDirectory('feeds');
         $disk->delete($tempPath);
@@ -59,6 +78,7 @@ class PiguProductFeedExporter
         $tempAbsolute = $disk->path($tempPath);
         $finalAbsolute = $disk->path($relativePath);
 
+        $productsConsidered = 0;
         $exportedProducts = 0;
         $exportedModifications = 0;
         $skippedProducts = 0;
@@ -74,20 +94,21 @@ class PiguProductFeedExporter
             fwrite($handle, '<?xml version="1.0" encoding="UTF-8"?>'."\n");
             fwrite($handle, '<products xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">'."\n");
 
-            Product::query()
-                ->with(['variants.inventoryLevels', 'variants.supplierProducts.supplier', 'images', 'sourceCategories'])
-                ->orderBy('id')
+            $this->productQuery($channel, $options, $easyEligibleHandles)
                 ->chunkById((int) $config['export_chunk_size'], function ($products) use (
                     $handle,
                     $channel,
                     $config,
+                    $easyEligibleHandles,
+                    &$productsConsidered,
                     &$exportedProducts,
                     &$exportedModifications,
                     &$skippedProducts,
                     &$skippedModifications,
                 ): void {
                     foreach ($products as $product) {
-                        $result = $this->exportProduct($product, $channel, $config);
+                        $productsConsidered++;
+                        $result = $this->exportProduct($product, $channel, $config, $easyEligibleHandles);
 
                         foreach ($result['xml_blocks'] as $block) {
                             fwrite($handle, $block);
@@ -128,12 +149,135 @@ class PiguProductFeedExporter
             'feed_path' => $relativePath,
             'absolute_path' => storage_path('app/public/'.$relativePath),
             'public_url' => $publicUrl,
+            'products_considered' => $productsConsidered,
             'exported_products' => $exportedProducts,
             'exported_modifications' => $exportedModifications,
             'skipped_products' => $skippedProducts,
             'skipped_modifications' => $skippedModifications,
+            'skipped_by_code' => $this->groupSkippedByCode(),
+            'skipped_by_source_category' => $this->groupSkippedBySourceCategory(),
+            'filter' => [
+                'easy_only' => $options->easyOnly,
+                'mapped_only' => $options->mappedOnly,
+                'collection' => $options->collection,
+            ],
             'skipped_rows' => $this->skippedRows,
+            'export_resolutions' => $this->exportResolutions,
         ];
+    }
+
+    /**
+     * @param  list<string>|null  $easyEligibleHandles
+     * @return Builder<Product>
+     */
+    private function productQuery(
+        MarketplaceChannel $channel,
+        PiguExportOptions $options,
+        ?array $easyEligibleHandles = null,
+    ): Builder {
+        $query = Product::query()
+            ->with(['variants.inventoryLevels', 'variants.supplierProducts.supplier', 'images', 'sourceCategories'])
+            ->orderBy('id');
+
+        if ($options->collection !== null) {
+            $handle = $options->collection;
+            $query->whereHas('sourceCategories', function (Builder $builder) use ($handle): void {
+                $builder->where('handle', $handle);
+            });
+        }
+
+        if ($options->easyOnly) {
+            $handles = $easyEligibleHandles ?? $this->easyOnlyCollectionHandles($channel);
+
+            if ($handles === []) {
+                $query->whereRaw('1 = 0');
+            } else {
+                $query->whereHas('sourceCategories', function (Builder $builder) use ($handles): void {
+                    $builder->where('type', 'collection')->whereIn('handle', $handles);
+                });
+            }
+        } elseif ($options->mappedOnly) {
+            $this->applyMappedOnlyFilter($query, $channel);
+        }
+
+        return $query;
+    }
+
+    /**
+     * @return list<string>
+     */
+    public function easyOnlyCollectionHandles(MarketplaceChannel $channel): array
+    {
+        $mappedHandles = CategoryMapping::query()
+            ->where('marketplace_channel_id', $channel->id)
+            ->where('source_type', 'collection')
+            ->where('enabled', true)
+            ->where('export_enabled', true)
+            ->pluck('source_value')
+            ->map(fn ($value): string => trim((string) $value))
+            ->filter()
+            ->unique()
+            ->values();
+
+        $dimensionHandles = PiguDimensionRule::query()
+            ->where('enabled', true)
+            ->where('match_type', 'collection')
+            ->pluck('match_value')
+            ->map(fn ($value): string => trim((string) $value))
+            ->filter()
+            ->unique();
+
+        $propertyHandles = PiguPropertyRule::query()
+            ->where('enabled', true)
+            ->where('match_type', 'collection')
+            ->pluck('match_value')
+            ->map(fn ($value): string => trim((string) $value))
+            ->filter()
+            ->unique();
+
+        return $mappedHandles
+            ->filter(fn (string $handle): bool => $dimensionHandles->contains($handle) && $propertyHandles->contains($handle))
+            ->values()
+            ->all();
+    }
+
+    /**
+     * @param  Builder<Product>  $query
+     */
+    private function applyMappedOnlyFilter(Builder $query, MarketplaceChannel $channel): void
+    {
+        $mappings = CategoryMapping::query()
+            ->where('marketplace_channel_id', $channel->id)
+            ->where('enabled', true)
+            ->where('export_enabled', true)
+            ->get(['source_type', 'source_value']);
+
+        if ($mappings->isEmpty()) {
+            $query->whereRaw('1 = 0');
+
+            return;
+        }
+
+        $query->whereHas('sourceCategories', function (Builder $builder) use ($mappings): void {
+            $builder->where(function (Builder $outer) use ($mappings): void {
+                foreach ($mappings as $mapping) {
+                    $value = trim((string) $mapping->source_value);
+
+                    if ($value === '') {
+                        continue;
+                    }
+
+                    $outer->orWhere(function (Builder $inner) use ($mapping, $value): void {
+                        $inner->where('type', $mapping->source_type)
+                            ->where(function (Builder $match) use ($value): void {
+                                $match->where('handle', $value)
+                                    ->orWhere('name', $value)
+                                    ->orWhere('external_id', $value);
+                            });
+                    });
+                }
+            });
+        });
     }
 
     public function resolveChannel(): MarketplaceChannel
@@ -173,6 +317,7 @@ class PiguProductFeedExporter
 
     /**
      * @param  array<string, mixed>  $config
+     * @param  list<string>|null  $easyEligibleHandles
      * @return array{
      *     xml_blocks: list<string>,
      *     exported_modifications: int,
@@ -180,9 +325,24 @@ class PiguProductFeedExporter
      *     skipped_modifications: int
      * }
      */
-    private function exportProduct(Product $product, MarketplaceChannel $channel, array $config): array
-    {
-        $readiness = $this->readiness->analyzeProduct($product, $channel);
+    private function exportProduct(
+        Product $product,
+        MarketplaceChannel $channel,
+        array $config,
+        ?array $easyEligibleHandles = null,
+    ): array {
+        $readiness = $this->readiness->analyzeProduct($product, $channel, $easyEligibleHandles);
+        $chosenSourceHandle = $readiness['chosen_source_handle'] ?? null;
+        $easyOnlyAllowed = $easyEligibleHandles !== null;
+
+        $this->exportResolutions[] = [
+            'product_id' => $product->id,
+            'handle' => $product->handle,
+            'title' => $product->title,
+            'chosen_source_handle' => $chosenSourceHandle,
+            'chosen_category_id' => $readiness['category_id'] ?? null,
+            'easy_only_allowed' => $easyOnlyAllowed,
+        ];
 
         if (! $readiness['exportable']) {
             foreach ($readiness['issues'] as $issue) {
@@ -206,6 +366,9 @@ class PiguProductFeedExporter
 
         $categoryId = (string) $readiness['category_id'];
         $categoryName = (string) $readiness['category_name'];
+        $preferredForRules = $easyOnlyAllowed && is_string($chosenSourceHandle)
+            ? $chosenSourceHandle
+            : null;
 
         $validVariants = [];
         $skippedMods = 0;
@@ -256,6 +419,7 @@ class PiguProductFeedExporter
                 $categoryId,
                 $categoryName,
                 $config,
+                $preferredForRules,
             );
 
             if ($built === null) {
@@ -309,6 +473,7 @@ class PiguProductFeedExporter
         string $categoryId,
         string $categoryName,
         array $config,
+        ?string $preferredSourceHandle = null,
     ): ?array {
         $title = trim((string) $product->title);
         if ($colorValue !== null && $colorValue !== '' && ! str_contains(mb_strtolower($title), mb_strtolower($colorValue))) {
@@ -352,7 +517,13 @@ class PiguProductFeedExporter
             || (count($variants) === 1 && VarleVariantPresenter::getMeaningfulNonColorOptions($product, $variants[0]['variant']) !== []);
 
         foreach ($variants as $row) {
-            $mod = $this->buildModificationXml($product, $row['variant'], $multipleMods, $config);
+            $mod = $this->buildModificationXml(
+                $product,
+                $row['variant'],
+                $multipleMods,
+                $config,
+                $preferredSourceHandle,
+            );
 
             if ($mod === null) {
                 continue;
@@ -403,7 +574,7 @@ class PiguProductFeedExporter
             }
         }
 
-        $xml .= $this->buildPropertiesXml($product, $categoryId, $colorValue);
+        $xml .= $this->buildPropertiesXml($product, $categoryId, $colorValue, $preferredSourceHandle);
         $xml .= "    <colours>\n";
         $xml .= "      <colour>\n";
 
@@ -436,6 +607,7 @@ class PiguProductFeedExporter
         ProductVariant $variant,
         bool $multipleMods,
         array $config,
+        ?string $preferredSourceHandle = null,
     ): ?string {
         $barcode = preg_replace('/\D+/', '', (string) ($variant->barcode ?? '')) ?? '';
 
@@ -480,7 +652,7 @@ class PiguProductFeedExporter
         $this->seenBarcodes[$barcode] = $variant->id;
         $this->seenSupplierCodes[$supplierCode] = $variant->id;
 
-        $dimensions = $this->resolveDimensions($variant, $config);
+        $dimensions = $this->resolveDimensions($variant, $config, $preferredSourceHandle);
         if ($dimensions['used_fallback']) {
             $this->skip(
                 $product,
@@ -526,8 +698,30 @@ class PiguProductFeedExporter
      * @param  array<string, mixed>  $config
      * @return array{weight: float, length: float, height: float, width: float, used_fallback: bool}
      */
-    private function resolveDimensions(ProductVariant $variant, array $config): array
-    {
+    private function resolveDimensions(
+        ProductVariant $variant,
+        array $config,
+        ?string $preferredSourceHandle = null,
+    ): array {
+        $variant->loadMissing('product.sourceCategories');
+        $product = $variant->product;
+        $ruleDimensions = $product !== null
+            ? $this->rules->resolveDimensions($product, $preferredSourceHandle)
+            : null;
+
+        if ($ruleDimensions !== null) {
+            $weightKg = $this->weightToKg($variant);
+            $usedFallbackWeight = $weightKg === null || $weightKg <= 0;
+
+            return [
+                'weight' => $usedFallbackWeight ? $ruleDimensions['weight_kg'] : $weightKg,
+                'length' => $ruleDimensions['length_m'],
+                'height' => $ruleDimensions['height_m'],
+                'width' => $ruleDimensions['width_m'],
+                'used_fallback' => false,
+            ];
+        }
+
         $weightKg = $this->weightToKg($variant);
         $usedFallback = false;
 
@@ -536,11 +730,10 @@ class PiguProductFeedExporter
             $usedFallback = true;
         }
 
-        // Package dimensions are not on Shopify variants yet — use configured defaults.
         $length = (float) $config['default_length_m'];
         $height = (float) $config['default_height_m'];
         $width = (float) $config['default_width_m'];
-        $usedFallback = true; // dimensions always fall back for MVP
+        $usedFallback = true;
 
         return [
             'weight' => $weightKg,
@@ -568,8 +761,32 @@ class PiguProductFeedExporter
         };
     }
 
-    private function buildPropertiesXml(Product $product, string $categoryId, ?string $colorValue): string
-    {
+    private function buildPropertiesXml(
+        Product $product,
+        string $categoryId,
+        ?string $colorValue,
+        ?string $preferredSourceHandle = null,
+    ): string {
+        $ruleProperties = $this->rules->resolveProperties($product, $categoryId, $preferredSourceHandle);
+
+        if ($ruleProperties !== []) {
+            $xml = "    <properties>\n";
+
+            foreach ($ruleProperties as $property) {
+                $xmlId = $this->propertyXmlIdFromRule($property);
+                $xml .= "      <property>\n";
+                $xml .= '        <id>'.$this->cdata($xmlId)."</id>\n";
+                $xml .= "        <values>\n";
+                $xml .= '          <value>'.$this->cdata($property['value'])."</value>\n";
+                $xml .= "        </values>\n";
+                $xml .= "      </property>\n";
+            }
+
+            $xml .= "    </properties>\n";
+
+            return $xml;
+        }
+
         $properties = [];
 
         $brand = filled($product->vendor) ? (string) $product->vendor : (filled($product->brand) ? (string) $product->brand : null);
@@ -590,39 +807,11 @@ class PiguProductFeedExporter
             $properties['material'] = $material;
         }
 
-        // Prefer field_id from imported category fields when titles match.
-        $fieldIds = PiguCategoryField::query()
-            ->where('lowest_category_id', (int) $categoryId)
-            ->get()
-            ->keyBy(fn (PiguCategoryField $field): string => mb_strtolower((string) ($field->field_title_en ?: $field->field_title)));
-
         $xml = "    <properties>\n";
         $written = 0;
 
         foreach ($properties as $key => $value) {
-            $field = $fieldIds->first(
-                fn (PiguCategoryField $candidate): bool => str_contains(
-                    mb_strtolower((string) ($candidate->field_title_en ?: $candidate->field_title)),
-                    match ($key) {
-                        'brand' => 'brand',
-                        'color' => 'color',
-                        'product_type' => 'type',
-                        'material' => 'material',
-                        default => $key,
-                    },
-                ) || str_contains(
-                    mb_strtolower((string) ($candidate->field_title ?: '')),
-                    match ($key) {
-                        'brand' => 'ženklas',
-                        'color' => 'spalva',
-                        'product_type' => 'tipas',
-                        'material' => 'medžiaga',
-                        default => $key,
-                    },
-                ),
-            );
-
-            $id = $field?->field_id !== null ? (string) $field->field_id : $key;
+            $id = $this->resolvePropertyXmlId($categoryId, $key);
             $xml .= "      <property>\n";
             $xml .= '        <id>'.$this->cdata($id)."</id>\n";
             $xml .= "        <values>\n";
@@ -632,14 +821,13 @@ class PiguProductFeedExporter
             $written++;
         }
 
-        // Size property from first variant when present.
         $first = $product->variants->first();
         if ($first !== null) {
             $size = collect(VarleVariantPresenter::getMeaningfulNonColorOptions($product, $first))
                 ->first(fn (array $option): bool => VarleVariantPresenter::isSizeOptionName($option['name']));
             if (is_array($size)) {
                 $xml .= "      <property>\n";
-                $xml .= '        <id>'.$this->cdata('size')."</id>\n";
+                $xml .= '        <id>'.$this->cdata($this->resolvePropertyXmlId($categoryId, 'size'))."</id>\n";
                 $xml .= "        <values>\n";
                 $xml .= '          <value>'.$this->cdata((string) $size['value'])."</value>\n";
                 $xml .= "        </values>\n";
@@ -655,6 +843,146 @@ class PiguProductFeedExporter
         $xml .= "    </properties>\n";
 
         return $xml;
+    }
+
+    /**
+     * @param  array{property_name: string, property_id?: ?int, value: string}  $property
+     */
+    private function propertyXmlIdFromRule(array $property): string
+    {
+        $name = trim((string) ($property['property_name'] ?? ''));
+
+        if ($name !== '') {
+            return $name;
+        }
+
+        $id = $property['property_id'] ?? null;
+
+        return $id !== null ? (string) $id : '';
+    }
+
+    /**
+     * PHH XML expects the human property name in <id>, not the numeric Pigu field_id.
+     * Prefer an explicit property_name; only fall back to a numeric id when no name is available.
+     */
+    private function resolvePropertyXmlId(string $categoryId, string $propertyName): string
+    {
+        $trimmed = trim($propertyName);
+
+        if ($trimmed !== '' && ! ctype_digit($trimmed)) {
+            $field = $this->findCategoryField($categoryId, $trimmed);
+
+            if ($field !== null) {
+                $title = trim((string) ($field->field_title ?: $field->field_title_en ?: ''));
+
+                if ($title !== '') {
+                    return $title;
+                }
+            }
+
+            return $trimmed;
+        }
+
+        $field = $trimmed !== ''
+            ? $this->findCategoryField($categoryId, $trimmed)
+            : null;
+
+        if ($field !== null) {
+            $title = trim((string) ($field->field_title ?: $field->field_title_en ?: ''));
+
+            if ($title !== '') {
+                return $title;
+            }
+
+            if ($field->field_id !== null) {
+                return (string) $field->field_id;
+            }
+        }
+
+        return $trimmed !== '' ? $trimmed : $propertyName;
+    }
+
+    private function findCategoryField(string $categoryId, string $propertyName): ?PiguCategoryField
+    {
+        $normalized = mb_strtolower($propertyName);
+
+        return PiguCategoryField::query()
+            ->where('lowest_category_id', (int) $categoryId)
+            ->get()
+            ->first(function (PiguCategoryField $candidate) use ($normalized, $propertyName): bool {
+                $titleEn = mb_strtolower((string) ($candidate->field_title_en ?: ''));
+                $titleLt = mb_strtolower((string) ($candidate->field_title ?: ''));
+                $fieldId = (string) ($candidate->field_id ?? '');
+
+                return $titleEn === $normalized
+                    || $titleLt === $normalized
+                    || $titleLt === mb_strtolower($propertyName)
+                    || $fieldId === $propertyName
+                    || str_contains($titleEn, $normalized)
+                    || str_contains($titleLt, $normalized);
+            });
+    }
+
+    /**
+     * @return array<string, int>
+     */
+    private function groupSkippedByCode(): array
+    {
+        return collect($this->skippedRows)
+            ->groupBy(fn (array $row): string => (string) ($row['code'] ?? 'unknown'))
+            ->map(fn ($rows): int => $rows->count())
+            ->sortDesc()
+            ->all();
+    }
+
+    /**
+     * @return array<string, int>
+     */
+    private function groupSkippedBySourceCategory(): array
+    {
+        $counts = [];
+
+        foreach ($this->skippedRows as $row) {
+            $categories = $row['source_categories'] ?? ($row['debug']['source_categories'] ?? []);
+
+            if (! is_array($categories) || $categories === []) {
+                $counts['none'] = ($counts['none'] ?? 0) + 1;
+
+                continue;
+            }
+
+            $keys = [];
+
+            foreach ($categories as $category) {
+                if (! is_array($category)) {
+                    continue;
+                }
+
+                $key = filled($category['handle'] ?? null)
+                    ? (string) $category['handle']
+                    : (filled($category['name'] ?? null) ? (string) $category['name'] : null);
+
+                if ($key === null || $key === '') {
+                    continue;
+                }
+
+                $keys[$key] = true;
+            }
+
+            if ($keys === []) {
+                $counts['none'] = ($counts['none'] ?? 0) + 1;
+
+                continue;
+            }
+
+            foreach (array_keys($keys) as $key) {
+                $counts[$key] = ($counts[$key] ?? 0) + 1;
+            }
+        }
+
+        arsort($counts);
+
+        return $counts;
     }
 
     /**
@@ -688,6 +1016,8 @@ class PiguProductFeedExporter
         ]);
 
         foreach ($this->skippedRows as $row) {
+            $categories = $row['source_categories'] ?? ($row['debug']['source_categories'] ?? []);
+
             fputcsv($handle, [
                 $row['product_id'],
                 $row['handle'] ?? null,
@@ -700,7 +1030,7 @@ class PiguProductFeedExporter
                 $row['severity'],
                 $row['debug']['marketplace_channel_id'] ?? null,
                 isset($row['debug']['mapping_matched']) ? (($row['debug']['mapping_matched'] ? 'yes' : 'no')) : null,
-                $this->formatSourceCategoriesForCsv($row['debug']['source_categories'] ?? []),
+                $this->formatSourceCategoriesForCsv(is_array($categories) ? $categories : []),
             ]);
         }
 
@@ -726,6 +1056,22 @@ class PiguProductFeedExporter
     }
 
     /**
+     * @return list<array<string, mixed>>
+     */
+    private function sourceCategoriesPayload(Product $product): array
+    {
+        $product->loadMissing('sourceCategories');
+
+        return $product->sourceCategories->map(fn ($category): array => [
+            'id' => $category->id,
+            'type' => $category->type,
+            'name' => $category->name,
+            'handle' => $category->handle,
+            'external_id' => $category->external_id,
+        ])->values()->all();
+    }
+
+    /**
      * @param  array<string, mixed>  $debug
      */
     private function skip(
@@ -736,6 +1082,9 @@ class PiguProductFeedExporter
         string $severity = 'error',
         array $debug = [],
     ): void {
+        $sourceCategories = $debug['source_categories'] ?? $this->sourceCategoriesPayload($product);
+        $debug['source_categories'] = $sourceCategories;
+
         $this->skippedRows[] = [
             'product_id' => $product->id,
             'handle' => $product->handle,
@@ -746,6 +1095,7 @@ class PiguProductFeedExporter
             'code' => $code,
             'message' => $message,
             'severity' => $severity,
+            'source_categories' => $sourceCategories,
             'debug' => $debug,
         ];
     }

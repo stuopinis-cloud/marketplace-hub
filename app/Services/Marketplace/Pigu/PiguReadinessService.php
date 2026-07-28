@@ -25,21 +25,26 @@ class PiguReadinessService
     ) {}
 
     /**
+     * @param  list<string>|null  $easyEligibleHandles  When set, only these collection handles may resolve a Pigu category.
      * @return array{
      *     exportable: bool,
      *     issues: list<array{code: string, message: string, severity: string}>,
      *     category_id: ?string,
      *     category_name: ?string,
+     *     chosen_source_handle: ?string,
      *     warnings: list<string>,
      *     debug: array<string, mixed>
      * }
      */
-    public function analyzeProduct(Product $product, MarketplaceChannel $channel): array
-    {
+    public function analyzeProduct(
+        Product $product,
+        MarketplaceChannel $channel,
+        ?array $easyEligibleHandles = null,
+    ): array {
         $issues = [];
         $warnings = [];
 
-        $category = $this->resolvePiguCategory($product, $channel);
+        $category = $this->resolvePiguCategory($product, $channel, $easyEligibleHandles);
         $debug = $category['debug'];
 
         if ($category['id'] === null || $category['name'] === null) {
@@ -84,21 +89,27 @@ class PiguReadinessService
             'issues' => $issues,
             'category_id' => $category['id'],
             'category_name' => $category['name'],
+            'chosen_source_handle' => $category['chosen_source_handle'],
             'warnings' => $warnings,
             'debug' => $debug,
         ];
     }
 
     /**
+     * @param  list<string>|null  $easyEligibleHandles
      * @return array{
      *     id: ?string,
      *     name: ?string,
      *     mapping: ?CategoryMapping,
+     *     chosen_source_handle: ?string,
      *     debug: array<string, mixed>
      * }
      */
-    public function resolvePiguCategory(Product $product, MarketplaceChannel $channel): array
-    {
+    public function resolvePiguCategory(
+        Product $product,
+        MarketplaceChannel $channel,
+        ?array $easyEligibleHandles = null,
+    ): array {
         $product->loadMissing('sourceCategories');
 
         $sourceCategories = $product->sourceCategories->map(fn (SourceCategory $category): array => [
@@ -109,8 +120,29 @@ class PiguReadinessService
             'external_id' => $category->external_id,
         ])->values()->all();
 
-        $explained = $this->categories->explain($product, $channel);
+        $easyOnly = $easyEligibleHandles !== null;
+        $eligible = $easyOnly
+            ? collect($easyEligibleHandles)->map(fn ($handle): string => trim((string) $handle))->filter()->unique()->values()
+            : null;
+
+        if ($easyOnly) {
+            $mappings = CategoryMapping::query()
+                ->where('marketplace_channel_id', $channel->id)
+                ->where('enabled', true)
+                ->where('export_enabled', true)
+                ->where('source_type', 'collection')
+                ->whereIn('source_value', $eligible->all())
+                ->get();
+
+            $explained = $this->categories->explain($product, $channel, $mappings);
+        } else {
+            $explained = $this->categories->explain($product, $channel);
+        }
+
         $mappingId = $explained['matched_mapping_id'] ?? null;
+        $chosenHandle = filled($explained['matched_source_value'] ?? null)
+            ? (string) $explained['matched_source_value']
+            : ($explained['details']['source_category_handle'] ?? null);
 
         $debug = [
             'marketplace_channel_id' => $channel->id,
@@ -122,12 +154,21 @@ class PiguReadinessService
             'matched_source_value' => $explained['matched_source_value'] ?? null,
             'resolver_source' => $explained['source'] ?? null,
             'export_enabled' => null,
+            'chosen_source_handle' => $chosenHandle,
+            'chosen_category_id' => null,
+            'easy_only_allowed' => $easyOnly,
+            'easy_eligible_handles' => $eligible?->all() ?? [],
         ];
 
         if ($mappingId === null) {
             $debug['available_mappings'] = CategoryMapping::query()
                 ->where('marketplace_channel_id', $channel->id)
                 ->where('enabled', true)
+                ->when($easyOnly, function ($query) use ($eligible): void {
+                    $query->where('source_type', 'collection')
+                        ->where('export_enabled', true)
+                        ->whereIn('source_value', $eligible->all());
+                })
                 ->get(['id', 'source_type', 'source_value', 'export_enabled', 'target_category_id', 'target_category_name'])
                 ->map(fn (CategoryMapping $mapping): array => [
                     'id' => $mapping->id,
@@ -139,7 +180,13 @@ class PiguReadinessService
                 ])
                 ->all();
 
-            return ['id' => null, 'name' => null, 'mapping' => null, 'debug' => $debug];
+            return [
+                'id' => null,
+                'name' => null,
+                'mapping' => null,
+                'chosen_source_handle' => null,
+                'debug' => $debug,
+            ];
         }
 
         $mapping = CategoryMapping::query()->find($mappingId);
@@ -149,15 +196,35 @@ class PiguReadinessService
             $debug['mapping_matched'] = false;
             $debug['ignored_reason'] = $mapping === null ? 'mapping_missing' : 'export_disabled';
 
-            return ['id' => null, 'name' => null, 'mapping' => null, 'debug' => $debug];
+            return [
+                'id' => null,
+                'name' => null,
+                'mapping' => null,
+                'chosen_source_handle' => null,
+                'debug' => $debug,
+            ];
+        }
+
+        // Defense in depth: never accept a non-easy collection handle under --easy-only.
+        if ($easyOnly && ($mapping->source_type !== 'collection' || ! $eligible->contains(trim((string) $mapping->source_value)))) {
+            $debug['mapping_matched'] = false;
+            $debug['ignored_reason'] = 'not_easy_eligible';
+
+            return [
+                'id' => null,
+                'name' => null,
+                'mapping' => null,
+                'chosen_source_handle' => null,
+                'debug' => $debug,
+            ];
         }
 
         $debug['export_enabled'] = true;
+        $chosenHandle = trim((string) $mapping->source_value);
 
         $id = filled($mapping->target_category_id) ? (string) $mapping->target_category_id : null;
         $name = filled($mapping->target_category_name) ? (string) $mapping->target_category_name : null;
 
-        // Only accept "id|name" / "id:name" path fallback — never a plain label without an ID.
         if (($id === null || $name === null)
             && filled($mapping->target_category_path)
             && preg_match('/^(\d+)\s*[|:]\s*(.+)$/u', (string) $mapping->target_category_path, $matches) === 1
@@ -166,7 +233,16 @@ class PiguReadinessService
             $name ??= trim($matches[2]);
         }
 
-        return ['id' => $id, 'name' => $name, 'mapping' => $mapping, 'debug' => $debug];
+        $debug['chosen_source_handle'] = $chosenHandle;
+        $debug['chosen_category_id'] = $id;
+
+        return [
+            'id' => $id,
+            'name' => $name,
+            'mapping' => $mapping,
+            'chosen_source_handle' => $chosenHandle,
+            'debug' => $debug,
+        ];
     }
 
     public function usableEnglishTranslation(Product $product, string $field): ?string
