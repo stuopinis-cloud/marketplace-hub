@@ -73,4 +73,22 @@ class PublicFeedController extends Controller
             ],
         );
     }
+
+    public function piguOffers(): Response
+    {
+        $relativePath = config('marketplace.exports.pigu.offers_feed_path', 'feeds/pigu-offers.xml');
+
+        if (! Storage::disk('public')->exists($relativePath)) {
+            abort(404, 'Pigu offers feed not found.');
+        }
+
+        return response(
+            Storage::disk('public')->get($relativePath),
+            200,
+            [
+                'Content-Type' => 'application/xml; charset=UTF-8',
+                'Cache-Control' => 'public, max-age=300',
+            ],
+        );
+    }
 }

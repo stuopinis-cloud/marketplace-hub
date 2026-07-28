@@ -43,6 +43,7 @@ class PiguReadinessService
     ): array {
         $issues = [];
         $warnings = [];
+        $easyOnly = $easyEligibleHandles !== null;
 
         $category = $this->resolvePiguCategory($product, $channel, $easyEligibleHandles);
         $debug = $category['debug'];
@@ -68,13 +69,32 @@ class PiguReadinessService
             $issues[] = $this->issue('missing_long_description', 'Product long description is missing.');
         }
 
+        $manufacturerName = filled($product->vendor)
+            ? (string) $product->vendor
+            : (filled($product->brand) ? (string) $product->brand : null);
+
+        if ($manufacturerName === null || trim($manufacturerName) === '') {
+            $warnings[] = 'Manufacturer name is missing (product vendor/brand empty).';
+            $issues[] = $this->issue(
+                'missing_manufacturer_name',
+                'Manufacturer name is missing (product vendor/brand empty).',
+                'warning',
+            );
+        }
+
         if ($category['id'] !== null) {
-            foreach ($this->missingMandatoryProperties((int) $category['id'], $product) as $fieldTitle) {
+            $missingProperties = $this->missingMandatoryProperties(
+                (int) $category['id'],
+                $product,
+                $category['chosen_source_handle'],
+            );
+
+            foreach ($missingProperties as $fieldTitle) {
                 $warnings[] = "Mandatory Pigu property missing: {$fieldTitle}";
                 $issues[] = $this->issue(
                     'missing_required_property',
                     "Mandatory Pigu property missing: {$fieldTitle}",
-                    'warning',
+                    $easyOnly ? 'error' : 'warning',
                 );
             }
         }
@@ -90,6 +110,7 @@ class PiguReadinessService
             'category_id' => $category['id'],
             'category_name' => $category['name'],
             'chosen_source_handle' => $category['chosen_source_handle'],
+            'manufacturer_name' => $manufacturerName,
             'warnings' => $warnings,
             'debug' => $debug,
         ];
@@ -224,13 +245,18 @@ class PiguReadinessService
 
         $id = filled($mapping->target_category_id) ? (string) $mapping->target_category_id : null;
         $name = filled($mapping->target_category_name) ? (string) $mapping->target_category_name : null;
+        $pathName = null;
 
-        if (($id === null || $name === null)
-            && filled($mapping->target_category_path)
+        if (filled($mapping->target_category_path)
             && preg_match('/^(\d+)\s*[|:]\s*(.+)$/u', (string) $mapping->target_category_path, $matches) === 1
         ) {
             $id ??= $matches[1];
-            $name ??= trim($matches[2]);
+            $pathName = trim($matches[2]);
+            $name ??= $pathName;
+        }
+
+        if ($id !== null) {
+            $name = $this->enrichCategoryName((int) $id, $name, $pathName);
         }
 
         $debug['chosen_source_handle'] = $chosenHandle;
@@ -274,9 +300,15 @@ class PiguReadinessService
     /**
      * @return list<string>
      */
-    public function missingMandatoryProperties(int $categoryId, Product $product): array
-    {
+    public function missingMandatoryProperties(
+        int $categoryId,
+        Product $product,
+        ?string $preferredHandle = null,
+    ): array {
         $missing = [];
+        $ruleResolver = new PiguRuleResolver;
+        $resolvedRules = collect($ruleResolver->resolveProperties($product, $categoryId, $preferredHandle))
+            ->keyBy(fn (array $property): string => mb_strtolower(trim($property['property_name'])));
 
         $fields = PiguCategoryField::query()
             ->where('lowest_category_id', $categoryId)
@@ -284,14 +316,62 @@ class PiguReadinessService
             ->get();
 
         foreach ($fields as $field) {
-            $value = $this->guessPropertyValue($product, $field);
+            $fieldTitle = trim((string) ($field->field_title ?: $field->field_title_en ?: $field->field_id));
+            $lookupKeys = array_filter([
+                mb_strtolower((string) $field->field_title),
+                mb_strtolower((string) $field->field_title_en),
+            ]);
+
+            $fromRules = null;
+            foreach ($lookupKeys as $key) {
+                if ($key !== '' && $resolvedRules->has($key)) {
+                    $fromRules = $resolvedRules->get($key)['value'] ?? null;
+                    break;
+                }
+            }
+
+            $value = filled($fromRules) ? (string) $fromRules : $this->guessPropertyValue($product, $field);
 
             if ($value === null || $value === '') {
-                $missing[] = (string) ($field->field_title ?: $field->field_id);
+                $missing[] = $fieldTitle !== '' ? $fieldTitle : (string) $field->field_id;
             }
         }
 
         return $missing;
+    }
+
+    private function enrichCategoryName(int $categoryId, ?string $currentName, ?string $pathName): ?string
+    {
+        $field = PiguCategoryField::query()
+            ->where('lowest_category_id', $categoryId)
+            ->orderBy('id')
+            ->first();
+
+        if ($field === null) {
+            if (filled($pathName) && str_contains($pathName, '>')) {
+                return $pathName;
+            }
+
+            return $currentName ?? $pathName;
+        }
+
+        $parts = array_values(array_filter([
+            filled($field->top_category_title) ? trim((string) $field->top_category_title) : null,
+            filled($field->lowest_category_title) ? trim((string) $field->lowest_category_title) : null,
+        ]));
+
+        if ($parts === []) {
+            return $currentName ?? $pathName;
+        }
+
+        $enriched = implode(' > ', array_unique($parts));
+
+        // Prefer richer path when available.
+        if ($currentName === null || $currentName === '' || ! str_contains((string) $currentName, '>')) {
+            return $enriched;
+        }
+
+        return $currentName;
     }
 
     public function guessPropertyValue(Product $product, PiguCategoryField $field): ?string

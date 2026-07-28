@@ -34,6 +34,7 @@ class PiguProductFeedExporter
         private readonly PiguReadinessService $readiness,
         private readonly PiguDescriptionSanitizer $sanitizer,
         private readonly PiguRuleResolver $rules = new PiguRuleResolver,
+        private readonly PiguImageUrlNormalizer $images = new PiguImageUrlNormalizer,
     ) {}
 
     /**
@@ -163,6 +164,9 @@ class PiguProductFeedExporter
             ],
             'skipped_rows' => $this->skippedRows,
             'export_resolutions' => $this->exportResolutions,
+            'warnings' => [
+                'Pigu product XML does not include prices. Confirm separate offer/price/stock feed requirements before going live.',
+            ],
         ];
     }
 
@@ -405,8 +409,7 @@ class PiguProductFeedExporter
             ];
         }
 
-        $hasColor = VarleVariantPresenter::productHasColorOption($product);
-        $groups = $this->buildColourGroups($product, $validVariants, $hasColor);
+        $groups = PiguVariantGrouping::buildGroups($product, $validVariants);
 
         $blocks = [];
         $exportedMods = 0;
@@ -414,12 +417,13 @@ class PiguProductFeedExporter
         foreach ($groups as $group) {
             $built = $this->buildProductXml(
                 $product,
-                $group['color_value'],
+                $group['split_value'],
                 $group['variants'],
                 $categoryId,
                 $categoryName,
                 $config,
                 $preferredForRules,
+                $readiness['manufacturer_name'] ?? null,
             );
 
             if ($built === null) {
@@ -441,44 +445,21 @@ class PiguProductFeedExporter
     }
 
     /**
-     * @param  list<array{variant: ProductVariant, quantity: int}>  $validVariants
-     * @return list<array{color_value: ?string, variants: list<array{variant: ProductVariant, quantity: int}>}>
-     */
-    private function buildColourGroups(Product $product, array $validVariants, bool $hasColor): array
-    {
-        if (! $hasColor) {
-            return [['color_value' => null, 'variants' => $validVariants]];
-        }
-
-        return collect($validVariants)
-            ->filter(fn (array $row): bool => filled(VarleVariantPresenter::colorValue($product, $row['variant'])))
-            ->groupBy(fn (array $row): string => (string) VarleVariantPresenter::colorValue($product, $row['variant']))
-            ->map(fn ($rows, string $color): array => [
-                'color_value' => $color,
-                'variants' => $rows->values()->all(),
-            ])
-            ->values()
-            ->all();
-    }
-
-    /**
      * @param  list<array{variant: ProductVariant, quantity: int}>  $variants
      * @param  array<string, mixed>  $config
      * @return array{xml: string, modifications: int}|null
      */
     private function buildProductXml(
         Product $product,
-        ?string $colorValue,
+        ?string $splitValue,
         array $variants,
         string $categoryId,
         string $categoryName,
         array $config,
         ?string $preferredSourceHandle = null,
+        ?string $manufacturerName = null,
     ): ?array {
-        $title = trim((string) $product->title);
-        if ($colorValue !== null && $colorValue !== '' && ! str_contains(mb_strtolower($title), mb_strtolower($colorValue))) {
-            $title .= ', '.$colorValue;
-        }
+        $title = PiguVariantGrouping::appendSplitValueToTitle((string) $product->title, $splitValue);
 
         $description = $this->sanitizer->sanitize((string) ($product->description_html ?? ''));
         if ($description === '') {
@@ -488,25 +469,37 @@ class PiguProductFeedExporter
         }
 
         $imageResult = VarleVariantPresenter::resolveExportImageUrls($product, $variants, $config);
-        $httpsImages = [];
-        $hadHttp = false;
+        $normalizedImages = $this->images->normalizeMany($imageResult['urls']);
 
-        foreach ($imageResult['urls'] as $url) {
-            if (str_starts_with(strtolower($url), 'https://')) {
-                $httpsImages[] = $url;
-            } elseif (str_starts_with(strtolower($url), 'http://')) {
-                $hadHttp = true;
-            }
+        foreach ($normalizedImages['warnings'] as $warning) {
+            $this->skip(
+                $product,
+                $variants[0]['variant'] ?? null,
+                $warning['reason'],
+                'Skipped image URL due to format/protocol: '.$warning['url'],
+                'warning',
+            );
         }
 
-        if ($hadHttp && $httpsImages === []) {
-            $this->skip($product, $variants[0]['variant'] ?? null, 'image_not_https', 'Only HTTP image URLs found.');
-
-            return null;
-        }
+        $httpsImages = $normalizedImages['urls'];
 
         if ($httpsImages === []) {
-            $this->skip($product, $variants[0]['variant'] ?? null, 'missing_image', 'No HTTPS images available.');
+            $hadHttpOnly = collect($imageResult['urls'])->contains(
+                fn (string $url): bool => str_starts_with(strtolower($url), 'http://'),
+            );
+
+            if ($hadHttpOnly) {
+                $this->skip($product, $variants[0]['variant'] ?? null, 'image_not_https', 'Only HTTP image URLs found.');
+            } elseif (collect($imageResult['urls'])->contains(fn (string $url): bool => $this->images->isWebpUrl($url))) {
+                $this->skip(
+                    $product,
+                    $variants[0]['variant'] ?? null,
+                    'invalid_image_format_webp',
+                    'No valid HTTPS JPG/JPEG/PNG images available (WEBP only).',
+                );
+            } else {
+                $this->skip($product, $variants[0]['variant'] ?? null, 'missing_image', 'No HTTPS JPG/JPEG/PNG images available.');
+            }
 
             return null;
         }
@@ -514,7 +507,7 @@ class PiguProductFeedExporter
         $modificationsXml = '';
         $modificationCount = 0;
         $multipleMods = count($variants) > 1
-            || (count($variants) === 1 && VarleVariantPresenter::getMeaningfulNonColorOptions($product, $variants[0]['variant']) !== []);
+            || (count($variants) === 1 && PiguVariantGrouping::getModificationOptions($product, $variants[0]['variant']) !== []);
 
         foreach ($variants as $row) {
             $mod = $this->buildModificationXml(
@@ -548,10 +541,7 @@ class PiguProductFeedExporter
         $xml .= '    <title>'.$this->cdata($title)."</title>\n";
 
         if ($titleEn !== null) {
-            $enTitle = $titleEn;
-            if ($colorValue !== null && $colorValue !== '' && ! str_contains(mb_strtolower($enTitle), mb_strtolower($colorValue))) {
-                $enTitle .= ', '.$colorValue;
-            }
+            $enTitle = PiguVariantGrouping::appendSplitValueToTitle($titleEn, $splitValue);
             $xml .= '    <title-en>'.$this->cdata($enTitle)."</title-en>\n";
         }
 
@@ -561,8 +551,12 @@ class PiguProductFeedExporter
             $xml .= '    <long-description-en>'.$this->cdata($this->sanitizer->sanitize($descriptionEn))."</long-description-en>\n";
         }
 
+        $resolvedManufacturer = filled($manufacturerName)
+            ? $manufacturerName
+            : ($config['manufacturer_name'] ?? null);
+
         foreach ([
-            'manufacturer-name' => $config['manufacturer_name'] ?? null,
+            'manufacturer-name' => $resolvedManufacturer,
             'manufacturer-address' => $config['manufacturer_address'] ?? null,
             'manufacturer-email' => $config['manufacturer_email'] ?? null,
             'representative-name' => $config['representative_name'] ?? null,
@@ -574,12 +568,12 @@ class PiguProductFeedExporter
             }
         }
 
-        $xml .= $this->buildPropertiesXml($product, $categoryId, $colorValue, $preferredSourceHandle);
+        $xml .= $this->buildPropertiesXml($product, $categoryId, $splitValue, $preferredSourceHandle);
         $xml .= "    <colours>\n";
         $xml .= "      <colour>\n";
 
-        if ($colorValue !== null && $colorValue !== '') {
-            $xml .= '        <colour-title>'.$this->cdata($colorValue)."</colour-title>\n";
+        if ($splitValue !== null && $splitValue !== '') {
+            $xml .= '        <colour-title>'.$this->cdata($splitValue)."</colour-title>\n";
         }
 
         $xml .= "        <images>\n";
@@ -665,7 +659,7 @@ class PiguProductFeedExporter
 
         $modificationTitle = '';
         if ($multipleMods) {
-            $modificationTitle = VarleVariantPresenter::variantDisplayTitle($product, $variant);
+            $modificationTitle = PiguVariantGrouping::modificationTitle($product, $variant);
             if (VarleVariantPresenter::isDefaultShopifyOptionValue($modificationTitle)) {
                 $modificationTitle = '';
             }

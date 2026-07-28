@@ -45,6 +45,11 @@ class PiguExportProductsXmlCommand extends Command
         $this->line('Skipped products: '.$result['skipped_products']);
         $this->line('Skipped modifications: '.$result['skipped_modifications']);
 
+        foreach ($result['warnings'] ?? [] as $warning) {
+            $this->newLine();
+            $this->components->warn($warning);
+        }
+
         $this->newLine();
         $this->line('Skipped by code:');
         if ($result['skipped_by_code'] === []) {

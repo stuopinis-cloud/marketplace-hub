@@ -15,6 +15,7 @@ Route::get('/health', HealthController::class);
 Route::get('/feeds/varle.xml', [PublicFeedController::class, 'varle']);
 Route::get('/feeds/ebay-en.xml', [PublicFeedController::class, 'ebay']);
 Route::get('/feeds/pigu-products.xml', [PublicFeedController::class, 'pigu']);
+Route::get('/feeds/pigu-offers.xml', [PublicFeedController::class, 'piguOffers']);
 
 Route::middleware('auth')->get(
     '/exports/varle-failed/{syncJobId}.csv',
