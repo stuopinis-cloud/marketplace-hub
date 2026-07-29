@@ -2,9 +2,9 @@
 
 namespace App\Services\Marketplace\Pigu;
 
-use App\Models\MarketplaceChannel;
 use App\Models\Product;
 use App\Models\ProductVariant;
+use App\Services\Marketplace\ProductAvailabilityResolver;
 use Illuminate\Support\Facades\File;
 use Illuminate\Support\Facades\Storage;
 use RuntimeException;
@@ -18,9 +18,16 @@ use RuntimeException;
  */
 class PiguOfferFeedExporter
 {
+    public const string HOURS_SOURCE_LOCAL = 'local';
+
+    public const string HOURS_SOURCE_SUPPLIER = 'supplier';
+
+    public const string HOURS_SOURCE_BACKORDER = 'backorder';
+
     public function __construct(
         private readonly PiguProductFeedExporter $products,
         private readonly PiguReadinessService $readiness,
+        private readonly ProductAvailabilityResolver $availability,
     ) {}
 
     /**
@@ -31,7 +38,11 @@ class PiguOfferFeedExporter
      *     public_url: string,
      *     offers_exported: int,
      *     offers_skipped: int,
-     *     skipped_by_code: array<string, int>
+     *     skipped_by_code: array<string, int>,
+     *     offers_by_collectionhours: array<string, int>,
+     *     local_offers_count: int,
+     *     supplier_offers_count: int,
+     *     backorder_offers_count: int
      * }
      */
     public function export(?PiguExportOptions $options = null): array
@@ -42,7 +53,6 @@ class PiguOfferFeedExporter
 
         $relativePath = (string) ($config['offers_feed_path'] ?? 'feeds/pigu-offers.xml');
         $tempPath = (string) ($config['offers_feed_temp_path'] ?? 'feeds/pigu-offers.xml.tmp');
-        $collectionHours = (int) ($config['collection_hours'] ?? 24);
 
         $easyEligibleHandles = $options->easyOnly
             ? $this->products->easyOnlyCollectionHandles($channel)
@@ -58,6 +68,10 @@ class PiguOfferFeedExporter
         $exported = 0;
         $skipped = 0;
         $skippedByCode = [];
+        $offersByCollectionHours = [];
+        $localOffers = 0;
+        $supplierOffers = 0;
+        $backorderOffers = 0;
 
         $handle = fopen($tempAbsolute, 'w');
         if ($handle === false) {
@@ -69,7 +83,7 @@ class PiguOfferFeedExporter
             fwrite($handle, "<products>\n");
 
             $query = Product::query()
-                ->with(['variants.inventoryLevels', 'sourceCategories'])
+                ->with(['variants.inventoryLevels', 'variants.supplierProducts.supplier', 'sourceCategories'])
                 ->orderBy('id');
 
             if ($options->easyOnly) {
@@ -87,10 +101,14 @@ class PiguOfferFeedExporter
                 $handle,
                 $channel,
                 $easyEligibleHandles,
-                $collectionHours,
+                $config,
                 &$exported,
                 &$skipped,
                 &$skippedByCode,
+                &$offersByCollectionHours,
+                &$localOffers,
+                &$supplierOffers,
+                &$backorderOffers,
             ): void {
                 foreach ($products as $product) {
                     $readiness = $this->readiness->analyzeProduct($product, $channel, $easyEligibleHandles);
@@ -103,17 +121,27 @@ class PiguOfferFeedExporter
                     }
 
                     foreach ($product->variants as $variant) {
-                        $row = $this->buildOfferRow($product, $variant, $collectionHours);
+                        $built = $this->buildOfferRow($variant, $config);
 
-                        if ($row === null) {
+                        if ($built === null) {
                             $skipped++;
                             $skippedByCode['invalid_offer'] = ($skippedByCode['invalid_offer'] ?? 0) + 1;
 
                             continue;
                         }
 
-                        fwrite($handle, $row);
+                        fwrite($handle, $built['xml']);
                         $exported++;
+
+                        $hoursKey = (string) $built['collection_hours'];
+                        $offersByCollectionHours[$hoursKey] = ($offersByCollectionHours[$hoursKey] ?? 0) + 1;
+
+                        match ($built['hours_source']) {
+                            self::HOURS_SOURCE_LOCAL => $localOffers++,
+                            self::HOURS_SOURCE_SUPPLIER => $supplierOffers++,
+                            self::HOURS_SOURCE_BACKORDER => $backorderOffers++,
+                            default => null,
+                        };
                     }
                 }
             });
@@ -138,6 +166,8 @@ class PiguOfferFeedExporter
             ?? url('/feeds/'.basename($relativePath))
         );
 
+        ksort($offersByCollectionHours, SORT_NUMERIC);
+
         return [
             'channel_id' => $channel->id,
             'feed_path' => $relativePath,
@@ -146,12 +176,20 @@ class PiguOfferFeedExporter
             'offers_exported' => $exported,
             'offers_skipped' => $skipped,
             'skipped_by_code' => $skippedByCode,
+            'offers_by_collectionhours' => $offersByCollectionHours,
+            'local_offers_count' => $localOffers,
+            'supplier_offers_count' => $supplierOffers,
+            'backorder_offers_count' => $backorderOffers,
         ];
     }
 
-    private function buildOfferRow(Product $product, ProductVariant $variant, int $collectionHours): ?string
+    /**
+     * @param  array<string, mixed>  $config
+     * @return array{xml: string, collection_hours: int, hours_source: string}|null
+     */
+    private function buildOfferRow(ProductVariant $variant, array $config): ?array
     {
-        $availability = $this->readiness->variantAvailability($variant);
+        $resolved = $this->availability->resolve($variant);
         $sku = trim((string) ($variant->sku ?? ''));
         $barcode = preg_replace('/\D+/', '', (string) ($variant->barcode ?? '')) ?? '';
         $price = $variant->price !== null ? (float) $variant->price : null;
@@ -161,9 +199,16 @@ class PiguOfferFeedExporter
             return null;
         }
 
+        $stock = max(0, (int) $resolved['quantity']);
+        $hours = $this->resolveCollectionHours($resolved, $config);
+
+        // Skip when there is no availability source (out of stock, not backorder).
+        if ($hours === null || $hours['hours'] <= 0) {
+            return null;
+        }
+
         $before = $compare !== null && $compare > $price ? $compare : $price;
         $after = $price;
-        $stock = max(0, (int) $availability['quantity']);
 
         $xml = "  <product>\n";
         $xml .= '    <sku>'.$this->cdata($sku)."</sku>\n";
@@ -171,10 +216,52 @@ class PiguOfferFeedExporter
         $xml .= '    <price-before-discount>'.$this->decimal($before)."</price-before-discount>\n";
         $xml .= '    <price-after-discount>'.$this->decimal($after)."</price-after-discount>\n";
         $xml .= '    <stock>'.$stock."</stock>\n";
-        $xml .= '    <collectionhours>'.$collectionHours."</collectionhours>\n";
+        $xml .= '    <collectionhours>'.$hours['hours']."</collectionhours>\n";
         $xml .= "  </product>\n";
 
-        return $xml;
+        return [
+            'xml' => $xml,
+            'collection_hours' => $hours['hours'],
+            'hours_source' => $hours['source'],
+        ];
+    }
+
+    /**
+     * @param  array<string, mixed>  $resolved
+     * @param  array<string, mixed>  $config
+     * @return array{hours: int, source: string}|null
+     */
+    public function resolveCollectionHours(array $resolved, array $config): ?array
+    {
+        $localHours = max(1, (int) ($config['local_collection_hours'] ?? 24));
+        $supplierHours = max(1, (int) ($config['supplier_collection_hours'] ?? 168));
+        $backorderHours = max(1, (int) ($config['backorder_collection_hours'] ?? 240));
+
+        $sourceType = $resolved['source_type'] ?? $resolved['source'] ?? null;
+        $localQuantity = (int) ($resolved['local_quantity'] ?? 0);
+        $quantity = (int) ($resolved['quantity'] ?? 0);
+
+        if ($localQuantity > 0 || $sourceType === ProductAvailabilityResolver::SOURCE_SHOPIFY) {
+            return ['hours' => $localHours, 'source' => self::HOURS_SOURCE_LOCAL];
+        }
+
+        if (in_array($sourceType, [
+            ProductAvailabilityResolver::SOURCE_SUPPLIER,
+            ProductAvailabilityResolver::SOURCE_SUPPLIER_AVAILABILITY_FALLBACK,
+        ], true)) {
+            return ['hours' => $supplierHours, 'source' => self::HOURS_SOURCE_SUPPLIER];
+        }
+
+        if ($sourceType === ProductAvailabilityResolver::SOURCE_BACKORDER) {
+            return ['hours' => $backorderHours, 'source' => self::HOURS_SOURCE_BACKORDER];
+        }
+
+        if ($quantity > 0) {
+            // Defensive fallback for unexpected exportable sources.
+            return ['hours' => $localHours, 'source' => self::HOURS_SOURCE_LOCAL];
+        }
+
+        return null;
     }
 
     private function decimal(float $value): string

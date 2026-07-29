@@ -14,6 +14,71 @@ class PiguProductXmlValidator
     ) {}
 
     /**
+     * @return array{
+     *     valid: bool,
+     *     offers_checked: int,
+     *     errors_by_type: array<string, int>,
+     *     errors: list<array{type: string, message: string}>
+     * }
+     */
+    public function validateOffersFeed(?string $relativePath = null): array
+    {
+        $config = config('marketplace.exports.pigu', []);
+        $relativePath ??= (string) ($config['offers_feed_path'] ?? 'feeds/pigu-offers.xml');
+
+        $errors = [];
+        $errorsByType = [];
+
+        if (! Storage::disk('public')->exists($relativePath)) {
+            $this->pushError($errors, $errorsByType, 'feed_missing', "Offers feed file missing: {$relativePath}");
+
+            return [
+                'valid' => false,
+                'offers_checked' => 0,
+                'errors_by_type' => $errorsByType,
+                'errors' => $errors,
+            ];
+        }
+
+        $xml = @simplexml_load_string((string) Storage::disk('public')->get($relativePath));
+
+        if ($xml === false) {
+            $this->pushError($errors, $errorsByType, 'malformed_xml', 'Offers feed XML is not well-formed.');
+
+            return [
+                'valid' => false,
+                'offers_checked' => 0,
+                'errors_by_type' => $errorsByType,
+                'errors' => $errors,
+            ];
+        }
+
+        $checked = 0;
+
+        foreach ($xml->product ?? [] as $offer) {
+            $checked++;
+            $hoursRaw = trim((string) ($offer->collectionhours ?? ''));
+
+            if ($hoursRaw === '' || ! ctype_digit($hoursRaw) || (int) $hoursRaw <= 0) {
+                $sku = trim((string) ($offer->sku ?? ''));
+                $this->pushError(
+                    $errors,
+                    $errorsByType,
+                    'invalid_collectionhours',
+                    "Offer {$sku} has invalid collectionhours: {$hoursRaw}",
+                );
+            }
+        }
+
+        return [
+            'valid' => $errors === [],
+            'offers_checked' => $checked,
+            'errors_by_type' => $errorsByType,
+            'errors' => array_slice($errors, 0, 50),
+        ];
+    }
+
+    /**
      * @param  list<string>|null  $easyEligibleCategoryIds
      * @return array{
      *     valid: bool,
