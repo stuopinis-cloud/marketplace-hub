@@ -2,9 +2,11 @@
 
 namespace App\Services\Marketplace\Pigu;
 
+use App\Enums\FeedFileStatus;
 use App\Models\Product;
 use App\Models\ProductVariant;
 use App\Services\Marketplace\ProductAvailabilityResolver;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\File;
 use Illuminate\Support\Facades\Storage;
 use RuntimeException;
@@ -15,6 +17,9 @@ use RuntimeException;
  *
  * Schema (single-market discount mechanism docs):
  * sku, ean, price-before-discount, price-after-discount, stock, collectionhours
+ *
+ * Default mode keeps product-readiness gating (category mapping, description, etc.).
+ * --all-valid mode exports every Shopify variant with valid sku/ean/price/stock only.
  */
 class PiguOfferFeedExporter
 {
@@ -23,6 +28,21 @@ class PiguOfferFeedExporter
     public const string HOURS_SOURCE_SUPPLIER = 'supplier';
 
     public const string HOURS_SOURCE_BACKORDER = 'backorder';
+
+    public const string FAILED_CSV_PATH = 'exports/pigu_offers_failed_latest.csv';
+
+    /** @var array<string, int> */
+    private array $seenEans = [];
+
+    /** @var array<string, true> */
+    private array $seenSkus = [];
+
+    /** @var list<array<string, mixed>> */
+    private array $skippedRows = [];
+
+    private int $consideredVariants = 0;
+
+    private int $duplicateEanCount = 0;
 
     public function __construct(
         private readonly PiguProductFeedExporter $products,
@@ -36,25 +56,37 @@ class PiguOfferFeedExporter
      *     feed_path: string,
      *     absolute_path: string,
      *     public_url: string,
+     *     filter: array{easy_only: bool, all_valid: bool},
+     *     variants_considered: int,
      *     offers_exported: int,
      *     offers_skipped: int,
      *     skipped_by_code: array<string, int>,
      *     offers_by_collectionhours: array<string, int>,
      *     local_offers_count: int,
      *     supplier_offers_count: int,
-     *     backorder_offers_count: int
+     *     backorder_offers_count: int,
+     *     unique_sku_count: int,
+     *     unique_ean_count: int,
+     *     duplicate_ean_count: int,
+     *     failed_csv_path: string
      * }
      */
     public function export(?PiguExportOptions $options = null): array
     {
         $options ??= new PiguExportOptions;
+        $this->seenEans = [];
+        $this->seenSkus = [];
+        $this->skippedRows = [];
+        $this->consideredVariants = 0;
+        $this->duplicateEanCount = 0;
+
         $channel = $this->products->resolveChannel();
         $config = $this->products->channelConfig($channel);
 
         $relativePath = (string) ($config['offers_feed_path'] ?? 'feeds/pigu-offers.xml');
         $tempPath = (string) ($config['offers_feed_temp_path'] ?? 'feeds/pigu-offers.xml.tmp');
 
-        $easyEligibleHandles = $options->easyOnly
+        $easyEligibleHandles = (! $options->allValid && $options->easyOnly)
             ? $this->products->easyOnlyCollectionHandles($channel)
             : null;
 
@@ -86,7 +118,7 @@ class PiguOfferFeedExporter
                 ->with(['variants.inventoryLevels', 'variants.supplierProducts.supplier', 'sourceCategories'])
                 ->orderBy('id');
 
-            if ($options->easyOnly) {
+            if (! $options->allValid && $options->easyOnly) {
                 $handles = $easyEligibleHandles ?? [];
                 if ($handles === []) {
                     $query->whereRaw('1 = 0');
@@ -100,6 +132,7 @@ class PiguOfferFeedExporter
             $query->chunkById((int) ($config['export_chunk_size'] ?? 100), function ($products) use (
                 $handle,
                 $channel,
+                $options,
                 $easyEligibleHandles,
                 $config,
                 &$exported,
@@ -111,27 +144,50 @@ class PiguOfferFeedExporter
                 &$backorderOffers,
             ): void {
                 foreach ($products as $product) {
-                    $readiness = $this->readiness->analyzeProduct($product, $channel, $easyEligibleHandles);
+                    if (! $options->allValid) {
+                        $readiness = $this->readiness->analyzeProduct($product, $channel, $easyEligibleHandles);
 
-                    if (! $readiness['exportable']) {
-                        $skipped++;
-                        $skippedByCode['not_exportable'] = ($skippedByCode['not_exportable'] ?? 0) + 1;
+                        if (! $readiness['exportable']) {
+                            foreach ($product->variants as $variant) {
+                                $this->consideredVariants++;
+                                $skipped++;
+                                $code = 'not_exportable';
+                                $skippedByCode[$code] = ($skippedByCode[$code] ?? 0) + 1;
+                                $this->recordSkip($product, $variant, $code, $this->availability->resolve($variant));
+                            }
 
-                        continue;
+                            continue;
+                        }
                     }
 
                     foreach ($product->variants as $variant) {
-                        $built = $this->buildOfferRow($variant, $config);
+                        $this->consideredVariants++;
+                        $built = $this->buildOfferRow($product, $variant, $config);
 
-                        if ($built === null) {
+                        if (! ($built['ok'] ?? false)) {
+                            $code = (string) ($built['code'] ?? 'invalid_offer');
                             $skipped++;
-                            $skippedByCode['invalid_offer'] = ($skippedByCode['invalid_offer'] ?? 0) + 1;
+                            $skippedByCode[$code] = ($skippedByCode[$code] ?? 0) + 1;
+                            if ($code === 'duplicate_ean') {
+                                $this->duplicateEanCount++;
+                            }
+                            $this->recordSkip(
+                                $product,
+                                $variant,
+                                $code,
+                                is_array($built['resolved'] ?? null) ? $built['resolved'] : $this->availability->resolve($variant),
+                            );
 
                             continue;
                         }
 
                         fwrite($handle, $built['xml']);
                         $exported++;
+
+                        $sku = (string) $built['sku'];
+                        $ean = (string) $built['ean'];
+                        $this->seenSkus[$sku] = true;
+                        $this->seenEans[$ean] = $variant->id;
 
                         $hoursKey = (string) $built['collection_hours'];
                         $offersByCollectionHours[$hoursKey] = ($offersByCollectionHours[$hoursKey] ?? 0) + 1;
@@ -161,18 +217,47 @@ class PiguOfferFeedExporter
         File::replace($finalAbsolute, $xml);
         File::delete($tempAbsolute);
 
-        $publicUrl = (string) (
-            $config['offers_public_url']
-            ?? url('/feeds/'.basename($relativePath))
+        $this->writeSkippedCsv($config);
+
+        $offersFilename = 'pigu-offers.xml';
+        $offersPath = 'feeds/pigu-offers.xml';
+        $offersPublicUrl = 'https://hub.gudle.lt/feeds/pigu-offers.xml';
+
+        $now = now();
+
+        DB::table('feed_files')->updateOrInsert(
+            [
+                'marketplace_channel_id' => $channel->id,
+                'filename' => $offersFilename,
+            ],
+            [
+                'path' => $offersPath,
+                'public_url' => $offersPublicUrl,
+                'status' => FeedFileStatus::Generated->value,
+                'generated_at' => $now,
+                'created_at' => DB::table('feed_files')
+                    ->where('marketplace_channel_id', $channel->id)
+                    ->where('filename', $offersFilename)
+                    ->value('created_at') ?: $now,
+                'updated_at' => $now,
+            ],
         );
 
         ksort($offersByCollectionHours, SORT_NUMERIC);
+        ksort($skippedByCode);
+
+        $failedCsvRelative = (string) ($config['offers_failed_csv_path'] ?? self::FAILED_CSV_PATH);
 
         return [
             'channel_id' => $channel->id,
             'feed_path' => $relativePath,
             'absolute_path' => storage_path('app/public/'.$relativePath),
-            'public_url' => $publicUrl,
+            'public_url' => $offersPublicUrl,
+            'filter' => [
+                'easy_only' => $options->easyOnly,
+                'all_valid' => $options->allValid,
+            ],
+            'variants_considered' => $this->consideredVariants,
             'offers_exported' => $exported,
             'offers_skipped' => $skipped,
             'skipped_by_code' => $skippedByCode,
@@ -180,31 +265,73 @@ class PiguOfferFeedExporter
             'local_offers_count' => $localOffers,
             'supplier_offers_count' => $supplierOffers,
             'backorder_offers_count' => $backorderOffers,
+            'unique_sku_count' => count($this->seenSkus),
+            'unique_ean_count' => count($this->seenEans),
+            'duplicate_ean_count' => $this->duplicateEanCount,
+            'failed_csv_path' => $failedCsvRelative,
         ];
     }
 
     /**
      * @param  array<string, mixed>  $config
-     * @return array{xml: string, collection_hours: int, hours_source: string}|null
+     * @return array{
+     *     ok: true,
+     *     xml: string,
+     *     sku: string,
+     *     ean: string,
+     *     collection_hours: int,
+     *     hours_source: string
+     * }|array{
+     *     ok: false,
+     *     code: string,
+     *     resolved?: array<string, mixed>
+     * }
      */
-    private function buildOfferRow(ProductVariant $variant, array $config): ?array
+    private function buildOfferRow(Product $product, ProductVariant $variant, array $config): array
     {
         $resolved = $this->availability->resolve($variant);
         $sku = trim((string) ($variant->sku ?? ''));
-        $barcode = preg_replace('/\D+/', '', (string) ($variant->barcode ?? '')) ?? '';
+        $rawBarcode = trim((string) ($variant->barcode ?? ''));
+        $ean = preg_replace('/\D+/', '', $rawBarcode) ?? '';
         $price = $variant->price !== null ? (float) $variant->price : null;
         $compare = $variant->compare_at_price !== null ? (float) $variant->compare_at_price : null;
 
-        if ($sku === '' || $barcode === '' || ! preg_match('/^\d{11,13}$/', $barcode) || $price === null || $price <= 0) {
-            return null;
+        if ($this->isExcludedFromPigu($product, $variant)) {
+            return ['ok' => false, 'code' => 'excluded_from_pigu', 'resolved' => $resolved];
         }
 
-        $stock = max(0, (int) $resolved['quantity']);
-        $hours = $this->resolveCollectionHours($resolved, $config);
+        if ($sku === '') {
+            return ['ok' => false, 'code' => 'missing_sku', 'resolved' => $resolved];
+        }
 
-        // Skip when there is no availability source (out of stock, not backorder).
+        if ($rawBarcode === '' || $ean === '') {
+            return ['ok' => false, 'code' => 'missing_ean', 'resolved' => $resolved];
+        }
+
+        if (! preg_match('/^\d{11,13}$/', $ean)) {
+            return ['ok' => false, 'code' => 'invalid_ean', 'resolved' => $resolved];
+        }
+
+        if (isset($this->seenEans[$ean])) {
+            return ['ok' => false, 'code' => 'duplicate_ean', 'resolved' => $resolved];
+        }
+
+        if ($price === null) {
+            return ['ok' => false, 'code' => 'missing_price', 'resolved' => $resolved];
+        }
+
+        if ($price <= 0) {
+            return ['ok' => false, 'code' => 'invalid_price', 'resolved' => $resolved];
+        }
+
+        $hours = $this->resolveCollectionHours($resolved, $config);
         if ($hours === null || $hours['hours'] <= 0) {
-            return null;
+            return ['ok' => false, 'code' => 'no_exportable_stock', 'resolved' => $resolved];
+        }
+
+        $stock = $this->resolveExportStock($resolved, $hours['source']);
+        if ($stock <= 0) {
+            return ['ok' => false, 'code' => 'no_exportable_stock', 'resolved' => $resolved];
         }
 
         $before = $compare !== null && $compare > $price ? $compare : $price;
@@ -212,7 +339,7 @@ class PiguOfferFeedExporter
 
         $xml = "  <product>\n";
         $xml .= '    <sku>'.$this->cdata($sku)."</sku>\n";
-        $xml .= '    <ean>'.$this->cdata($barcode)."</ean>\n";
+        $xml .= '    <ean>'.$this->cdata($ean)."</ean>\n";
         $xml .= '    <price-before-discount>'.$this->decimal($before)."</price-before-discount>\n";
         $xml .= '    <price-after-discount>'.$this->decimal($after)."</price-after-discount>\n";
         $xml .= '    <stock>'.$stock."</stock>\n";
@@ -220,10 +347,24 @@ class PiguOfferFeedExporter
         $xml .= "  </product>\n";
 
         return [
+            'ok' => true,
             'xml' => $xml,
+            'sku' => $sku,
+            'ean' => $ean,
             'collection_hours' => $hours['hours'],
             'hours_source' => $hours['source'],
         ];
+    }
+
+    /**
+     * @param  array<string, mixed>  $resolved
+     */
+    private function resolveExportStock(array $resolved, string $hoursSource): int
+    {
+        return match ($hoursSource) {
+            self::HOURS_SOURCE_BACKORDER => 1,
+            default => max(0, (int) ($resolved['quantity'] ?? 0)),
+        };
     }
 
     /**
@@ -262,6 +403,87 @@ class PiguOfferFeedExporter
         }
 
         return null;
+    }
+
+    private function isExcludedFromPigu(Product $product, ProductVariant $variant): bool
+    {
+        // No dedicated Pigu exclusion flag exists yet; keep a hook for future rules.
+        unset($product, $variant);
+
+        return false;
+    }
+
+    /**
+     * @param  array<string, mixed>  $resolved
+     */
+    private function recordSkip(Product $product, ProductVariant $variant, string $code, array $resolved): void
+    {
+        $this->skippedRows[] = [
+            'product_id' => $product->id,
+            'variant_id' => $variant->id,
+            'product_title' => $product->title,
+            'variant_title' => $variant->title,
+            'vendor' => $product->vendor,
+            'sku' => $variant->sku,
+            'ean' => $variant->barcode,
+            'price' => $variant->price,
+            'local_stock' => (int) ($resolved['local_quantity'] ?? 0),
+            'supplier_stock' => $resolved['supplier_quantity'] ?? null,
+            'inventory_policy' => $variant->inventory_policy,
+            'stock_source' => $resolved['source_type'] ?? $resolved['source'] ?? null,
+            'skip_reason' => $code,
+        ];
+    }
+
+    /**
+     * @param  array<string, mixed>  $config
+     */
+    private function writeSkippedCsv(array $config): void
+    {
+        $relative = (string) ($config['offers_failed_csv_path'] ?? self::FAILED_CSV_PATH);
+        $disk = Storage::disk('public');
+        $disk->makeDirectory(dirname($relative));
+
+        $handle = fopen($disk->path($relative), 'w');
+        if ($handle === false) {
+            return;
+        }
+
+        fputcsv($handle, [
+            'product_id',
+            'variant_id',
+            'product_title',
+            'variant_title',
+            'vendor',
+            'sku',
+            'ean',
+            'price',
+            'local_stock',
+            'supplier_stock',
+            'inventory_policy',
+            'stock_source',
+            'skip_reason',
+        ]);
+
+        foreach ($this->skippedRows as $row) {
+            fputcsv($handle, [
+                $row['product_id'],
+                $row['variant_id'],
+                $row['product_title'],
+                $row['variant_title'],
+                $row['vendor'],
+                $row['sku'],
+                $row['ean'],
+                $row['price'],
+                $row['local_stock'],
+                $row['supplier_stock'],
+                $row['inventory_policy'],
+                $row['stock_source'],
+                $row['skip_reason'],
+            ]);
+        }
+
+        fclose($handle);
     }
 
     private function decimal(float $value): string

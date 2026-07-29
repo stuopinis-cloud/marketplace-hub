@@ -2,6 +2,7 @@
 
 namespace Tests\Feature\Console;
 
+use App\Enums\FeedFileStatus;
 use App\Enums\ProductStatus;
 use App\Models\CategoryMapping;
 use App\Models\InventoryLevel;
@@ -172,6 +173,13 @@ class PiguExportCompletenessTest extends TestCase
         $this->assertStringContainsString('<collectionhours>24</collectionhours>', $xml);
 
         $this->get('/feeds/pigu-offers.xml')->assertOk();
+
+        $this->assertDatabaseHas('feed_files', [
+            'filename' => 'pigu-offers.xml',
+            'path' => 'feeds/pigu-offers.xml',
+            'public_url' => 'https://hub.gudle.lt/feeds/pigu-offers.xml',
+            'status' => FeedFileStatus::Generated->value,
+        ]);
     }
 
     public function test_validation_command_reports_offer_feed_warning_separately(): void

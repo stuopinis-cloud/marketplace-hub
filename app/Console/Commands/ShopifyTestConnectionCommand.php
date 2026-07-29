@@ -26,8 +26,11 @@ class ShopifyTestConnectionCommand extends Command
     }
     GRAPHQL;
 
-    public function handle(ShopifyClient $client): int
+    public function handle(): int
     {
+        // Avoid relying on container scalar injection; honor config() values explicitly.
+        $client = ShopifyClient::fromConfig();
+
         if (! $client->isConfigured()) {
             $this->components->error(ShopifyConfigurationException::missingCredentials()->getMessage());
 

@@ -34,6 +34,7 @@ return [
             'offers_feed_path' => env('PIGU_OFFERS_FEED_PATH', 'feeds/pigu-offers.xml'),
             'offers_feed_temp_path' => env('PIGU_OFFERS_FEED_TEMP_PATH', 'feeds/pigu-offers.xml.tmp'),
             'offers_public_url' => env('PIGU_OFFERS_FEED_PUBLIC_URL'),
+            'offers_failed_csv_path' => env('PIGU_OFFERS_FAILED_CSV_PATH', 'exports/pigu_offers_failed_latest.csv'),
             'local_collection_hours' => (int) env('PIGU_LOCAL_COLLECTION_HOURS', 24),
             'supplier_collection_hours' => (int) env('PIGU_SUPPLIER_COLLECTION_HOURS', 168),
             'backorder_collection_hours' => (int) env('PIGU_BACKORDER_COLLECTION_HOURS', 240),

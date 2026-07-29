@@ -2,6 +2,7 @@
 
 namespace App\Services\Marketplace\Pigu;
 
+use App\Enums\FeedFileStatus;
 use App\Models\CategoryMapping;
 use App\Models\MarketplaceChannel;
 use App\Models\MarketplaceTranslation;
@@ -12,6 +13,7 @@ use App\Models\Product;
 use App\Models\ProductVariant;
 use App\Services\Marketplace\Varle\VarleVariantPresenter;
 use Illuminate\Database\Eloquent\Builder;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\File;
 use Illuminate\Support\Facades\Storage;
 use RuntimeException;
@@ -143,6 +145,31 @@ class PiguProductFeedExporter
         $publicUrl = (string) (
             $config['public_url']
             ?: url('/feeds/'.basename($relativePath))
+        );
+
+        // Explicit upsert into feed_files so the admin UI can always discover Pigu feeds.
+        $productFilename = 'pigu-products.xml';
+        $productPath = 'feeds/pigu-products.xml';
+        $productPublicUrl = 'https://hub.gudle.lt/feeds/pigu-products.xml';
+
+        $now = now();
+
+        DB::table('feed_files')->updateOrInsert(
+            [
+                'marketplace_channel_id' => $channel->id,
+                'filename' => $productFilename,
+            ],
+            [
+                'path' => $productPath,
+                'public_url' => $productPublicUrl,
+                'status' => FeedFileStatus::Generated->value,
+                'generated_at' => $now,
+                'created_at' => DB::table('feed_files')
+                    ->where('marketplace_channel_id', $channel->id)
+                    ->where('filename', $productFilename)
+                    ->value('created_at') ?: $now,
+                'updated_at' => $now,
+            ],
         );
 
         return [

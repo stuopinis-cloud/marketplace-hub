@@ -28,7 +28,7 @@ class TranslateProductFieldJob implements ShouldQueue
 
     public function handle(
         MarketplaceTranslationService $translations,
-        MarketplaceTranslatorInterface $translator,
+        ?MarketplaceTranslatorInterface $translator = null,
     ): void {
         $translation = MarketplaceTranslation::query()->find($this->translationId);
 
@@ -42,6 +42,13 @@ class TranslateProductFieldJob implements ShouldQueue
             MarketplaceTranslationStatus::AutoTranslated,
         ], true)) {
             return;
+        }
+
+        if ($translator === null) {
+            // In the normal app runtime, MarketplaceTranslatorInterface is bound in the container.
+            // Tests may dispatch this job for already-approved translations where the translator
+            // isn't actually needed; allow those early-returns above.
+            throw new \RuntimeException('MarketplaceTranslatorInterface binding is missing while translating.');
         }
 
         $translations->withLock($translation, function () use ($translations, $translator, $translation): void {

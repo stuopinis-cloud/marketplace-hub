@@ -3,6 +3,7 @@
 namespace Tests\Feature\Console;
 
 use App\Enums\ProductStatus;
+use App\Enums\FeedFileStatus;
 use App\Models\CategoryMapping;
 use App\Models\InventoryLevel;
 use App\Models\MarketplaceChannel;
@@ -48,6 +49,13 @@ class PiguExportProductsXmlCommandTest extends TestCase
         $response->assertOk();
         $response->assertHeader('Content-Type', 'application/xml; charset=UTF-8');
         $response->assertHeader('Cache-Control', 'max-age=300, public');
+
+        $this->assertDatabaseHas('feed_files', [
+            'filename' => 'pigu-products.xml',
+            'path' => 'feeds/pigu-products.xml',
+            'public_url' => 'https://hub.gudle.lt/feeds/pigu-products.xml',
+            'status' => FeedFileStatus::Generated->value,
+        ]);
     }
 
     public function test_product_without_category_mapping_is_skipped(): void
