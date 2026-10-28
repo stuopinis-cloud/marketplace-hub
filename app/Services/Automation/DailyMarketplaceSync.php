@@ -2,6 +2,9 @@
 
 namespace App\Services\Automation;
 
+use App\Services\Marketplace\Pigu\PiguExportOptions;
+use App\Services\Marketplace\Pigu\PiguOfferFeedExporter;
+use App\Services\Marketplace\Pigu\PiguProductXmlValidator;
 use App\Services\Marketplace\Translations\TranslationQueueService;
 use App\Services\Marketplace\Varle\VarleFeedPublisher;
 use App\Services\Marketplace\Varle\VarleReadinessService;
@@ -18,6 +21,8 @@ class DailyMarketplaceSync
         private readonly VarleReadinessService $readinessService,
         private readonly VarleFeedPublisher $varleFeedPublisher,
         private readonly SyncJobFailedCsvExporter $failedCsvExporter,
+        private readonly PiguOfferFeedExporter $piguOfferExporter,
+        private readonly PiguProductXmlValidator $piguOfferValidator,
         private readonly TranslationQueueService $translationQueue = new TranslationQueueService,
     ) {}
 
@@ -26,6 +31,7 @@ class DailyMarketplaceSync
         bool $runSupplierSync = true,
         bool $runReadinessRefresh = true,
         bool $runVarleExport = true,
+        bool $runPiguOffersExport = false,
         bool $generateFailedCsv = true,
     ): DailyMarketplaceSyncResult {
         $summary = [];
@@ -123,6 +129,32 @@ class DailyMarketplaceSync
                     $warning = 'Varle export finished with skipped variants.';
                     $warnings[] = $warning;
                     $summary['varle_export']['warning'] = $warning;
+                }
+            }
+
+            if ($runPiguOffersExport) {
+                // Only regenerate after successful Shopify import (when requested) and supplier sync stage.
+                $exportResult = $this->piguOfferExporter->export(new PiguExportOptions(allValid: true));
+                $validation = $this->piguOfferValidator->validateOffersFeed($exportResult['feed_path']);
+
+                $summary['pigu_offers_export'] = [
+                    'offers_exported' => $exportResult['offers_exported'],
+                    'offers_skipped' => $exportResult['offers_skipped'],
+                    'local_offers_count' => $exportResult['local_offers_count'],
+                    'supplier_offers_count' => $exportResult['supplier_offers_count'],
+                    'supplier_only_offers_count' => $exportResult['supplier_only_offers_count'] ?? 0,
+                    'backorder_offers_count' => $exportResult['backorder_offers_count'],
+                    'feed_path' => $exportResult['feed_path'],
+                    'public_url' => $exportResult['public_url'],
+                    'published_atomically' => true,
+                    'validation_valid' => (bool) ($validation['valid'] ?? false),
+                ];
+
+                if (! ($validation['valid'] ?? false)) {
+                    return DailyMarketplaceSyncResult::failed(
+                        'Pigu offers export validation failed.',
+                        $summary,
+                    );
                 }
             }
 

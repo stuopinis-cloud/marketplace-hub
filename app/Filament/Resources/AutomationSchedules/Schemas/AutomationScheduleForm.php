@@ -55,6 +55,10 @@ class AutomationScheduleForm
                 Toggle::make('run_varle_export')
                     ->label('Run Varle export')
                     ->default(true),
+                Toggle::make('run_pigu_offers_export')
+                    ->label('Run Pigu offers export (all-valid)')
+                    ->helperText('After Shopify + supplier sync: regenerate combined pigu-offers.xml including supplier-only offers.')
+                    ->default(false),
                 Toggle::make('generate_failed_csv')
                     ->label('Generate failed CSV')
                     ->default(true),

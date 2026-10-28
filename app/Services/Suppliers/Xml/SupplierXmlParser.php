@@ -63,6 +63,7 @@ class SupplierXmlParser
         $availabilityPath = SupplierXmlConfig::availabilityPath($supplier);
         $barcodePath = SupplierXmlConfig::barcodePath($supplier);
         $titlePath = SupplierXmlConfig::titlePath($supplier);
+        $pricePath = SupplierXmlConfig::pricePath($supplier);
 
         foreach ($items as $index => $item) {
             if (! $item instanceof DOMNode) {
@@ -95,9 +96,16 @@ class SupplierXmlParser
             $title = $titlePath !== null
                 ? $this->normalizeWhitespace($this->valueAt($xpath, $titlePath, $item))
                 : null;
+            $priceRaw = $pricePath !== null
+                ? $this->normalizeWhitespace($this->valueAt($xpath, $pricePath, $item))
+                : null;
+            $price = $this->parsePrice($priceRaw);
 
             $entries[] = [
                 'sku' => $sku,
+                'barcode' => $barcode,
+                'title' => $title,
+                'price' => $price,
                 'stock_quantity' => $quantity,
                 'availability_status' => $availabilityStatus,
                 'raw_payload' => array_filter([
@@ -106,6 +114,7 @@ class SupplierXmlParser
                     'availability' => $availabilityRaw,
                     'barcode' => $barcode,
                     'title' => $title,
+                    'price' => $priceRaw,
                 ], fn (mixed $value): bool => $value !== null && $value !== ''),
             ];
         }
@@ -161,6 +170,23 @@ class SupplierXmlParser
         }
 
         return [0, 'unavailable'];
+    }
+
+    private function parsePrice(?string $priceRaw): ?float
+    {
+        if ($priceRaw === null || $priceRaw === '') {
+            return null;
+        }
+
+        $normalized = str_replace([' ', ','], ['', '.'], $priceRaw);
+
+        if (! is_numeric($normalized)) {
+            return null;
+        }
+
+        $price = (float) $normalized;
+
+        return $price > 0 ? $price : null;
     }
 
     private function normalizeWhitespace(?string $value): ?string

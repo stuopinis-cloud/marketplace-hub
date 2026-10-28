@@ -54,7 +54,13 @@ class PublicFeedController extends Controller
 
     public function pigu(): Response
     {
+        return $this->piguProducts();
+    }
+
+    public function piguProducts(): Response
+    {
         $relativePath = FeedFile::query()
+            ->where('filename', 'pigu-products.xml')
             ->whereHas('marketplaceChannel', fn ($query) => $query->where('type', 'pigu'))
             ->latest('generated_at')
             ->value('path')
@@ -76,7 +82,12 @@ class PublicFeedController extends Controller
 
     public function piguOffers(): Response
     {
-        $relativePath = config('marketplace.exports.pigu.offers_feed_path', 'feeds/pigu-offers.xml');
+        $relativePath = FeedFile::query()
+            ->where('filename', 'pigu-offers.xml')
+            ->whereHas('marketplaceChannel', fn ($query) => $query->where('type', 'pigu'))
+            ->latest('generated_at')
+            ->value('path')
+            ?? config('marketplace.exports.pigu.offers_feed_path', 'feeds/pigu-offers.xml');
 
         if (! Storage::disk('public')->exists($relativePath)) {
             abort(404, 'Pigu offers feed not found.');

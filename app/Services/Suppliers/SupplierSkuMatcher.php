@@ -112,12 +112,7 @@ class SupplierSkuMatcher
         }
 
         if ($matches->count() === 1) {
-            return [
-                'variant' => $matches->first(),
-                'match_status' => SupplierProduct::MATCH_STATUS_MATCHED,
-                'match_method' => SupplierProduct::MATCH_METHOD_SKU_GLOBAL,
-                'issue_code' => null,
-            ];
+            return $this->skuMatchOrEanConflict($matches->first(), $barcode, SupplierProduct::MATCH_METHOD_SKU_GLOBAL);
         }
 
         return [
@@ -161,18 +156,48 @@ class SupplierSkuMatcher
         }
 
         if ($matches->count() === 1) {
-            return [
-                'variant' => $matches->first(),
-                'match_status' => SupplierProduct::MATCH_STATUS_MATCHED,
-                'match_method' => SupplierProduct::MATCH_METHOD_SKU,
-                'issue_code' => null,
-            ];
+            return $this->skuMatchOrEanConflict($matches->first(), $barcode, SupplierProduct::MATCH_METHOD_SKU);
         }
 
         return [
             'variant' => null,
             'match_status' => SupplierProduct::MATCH_STATUS_UNMATCHED,
             'match_method' => null,
+            'issue_code' => null,
+        ];
+    }
+
+    /**
+     * Same SKU with a different EAN is a conflict — do not silently merge.
+     *
+     * @return array{
+     *     variant: ?ProductVariant,
+     *     match_status: string,
+     *     match_method: ?string,
+     *     issue_code: ?string
+     * }
+     */
+    private function skuMatchOrEanConflict(ProductVariant $variant, ?string $barcode, string $matchMethod): array
+    {
+        // Only enforce SKU↔EAN consistency when barcode matching is enabled for the supplier.
+        if ($this->matchByBarcode && filled($barcode) && filled($variant->barcode)) {
+            $supplierEan = preg_replace('/\D+/', '', (string) $barcode) ?? '';
+            $shopifyEan = preg_replace('/\D+/', '', (string) $variant->barcode) ?? '';
+
+            if ($supplierEan !== '' && $shopifyEan !== '' && $supplierEan !== $shopifyEan) {
+                return [
+                    'variant' => null,
+                    'match_status' => SupplierProduct::MATCH_STATUS_AMBIGUOUS,
+                    'match_method' => null,
+                    'issue_code' => 'sku_ean_conflict',
+                ];
+            }
+        }
+
+        return [
+            'variant' => $variant,
+            'match_status' => SupplierProduct::MATCH_STATUS_MATCHED,
+            'match_method' => $matchMethod,
             'issue_code' => null,
         ];
     }

@@ -65,12 +65,14 @@ class DailySyncCommandTest extends TestCase
                     bool $runSupplierSync,
                     bool $runReadinessRefresh,
                     bool $runVarleExport,
+                    bool $runPiguOffersExport,
                     bool $generateFailedCsv,
                 ): bool {
                     return $runShopifyImport === false
                         && $runSupplierSync === true
                         && $runReadinessRefresh === true
                         && $runVarleExport === false
+                        && $runPiguOffersExport === false
                         && $generateFailedCsv === false;
                 })
                 ->andReturn(DailyMarketplaceSyncResult::success());

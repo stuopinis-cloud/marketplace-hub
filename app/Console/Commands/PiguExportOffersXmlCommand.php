@@ -41,6 +41,7 @@ class PiguExportOffersXmlCommand extends Command
         $this->line('Offers skipped: '.$result['offers_skipped']);
         $this->line('Local offers: '.$result['local_offers_count']);
         $this->line('Supplier offers: '.$result['supplier_offers_count']);
+        $this->line('Supplier-only offers: '.($result['supplier_only_offers_count'] ?? 0));
         $this->line('Backorder offers: '.$result['backorder_offers_count']);
         $this->line('Unique SKU count: '.$result['unique_sku_count']);
         $this->line('Unique EAN count: '.$result['unique_ean_count']);

@@ -14,9 +14,10 @@ class DailySyncCommand extends Command
                             {--skip-supplier : Skip enabled supplier syncs}
                             {--skip-readiness : Skip Varle readiness refresh}
                             {--skip-varle : Skip Varle XML export}
+                            {--pigu-offers : Also regenerate pigu-offers.xml (all-valid) after sync}
                             {--skip-failed-csv : Skip failed CSV export}';
 
-    protected $description = 'Queue (or optionally run) the daily Shopify import, supplier sync, readiness refresh, and Varle XML export workflow';
+    protected $description = 'Queue (or optionally run) the daily Shopify import, supplier sync, readiness refresh, Varle XML, and optional Pigu offers export workflow';
 
     public function handle(MarketplaceJobDispatcher $dispatcher, DailyMarketplaceSync $dailySync): int
     {
@@ -24,6 +25,7 @@ class DailySyncCommand extends Command
         $runSupplierSync = ! $this->option('skip-supplier');
         $runReadinessRefresh = ! $this->option('skip-readiness');
         $runVarleExport = ! $this->option('skip-varle');
+        $runPiguOffersExport = (bool) $this->option('pigu-offers');
         $generateFailedCsv = ! $this->option('skip-failed-csv');
 
         if (! $this->option('sync')) {
@@ -32,6 +34,7 @@ class DailySyncCommand extends Command
                 runSupplierSync: $runSupplierSync,
                 runReadinessRefresh: $runReadinessRefresh,
                 runVarleExport: $runVarleExport,
+                runPiguOffersExport: $runPiguOffersExport,
                 generateFailedCsv: $generateFailedCsv,
             );
 
@@ -55,6 +58,7 @@ class DailySyncCommand extends Command
         $this->line('Supplier sync: '.($runSupplierSync ? 'enabled' : 'skipped'));
         $this->line('Readiness refresh: '.($runReadinessRefresh ? 'enabled' : 'skipped'));
         $this->line('Varle export: '.($runVarleExport ? 'enabled' : 'skipped'));
+        $this->line('Pigu offers export: '.($runPiguOffersExport ? 'enabled' : 'skipped'));
         $this->line('Failed CSV: '.($generateFailedCsv ? 'enabled' : 'skipped'));
         $this->newLine();
 
@@ -63,6 +67,7 @@ class DailySyncCommand extends Command
             runSupplierSync: $runSupplierSync,
             runReadinessRefresh: $runReadinessRefresh,
             runVarleExport: $runVarleExport,
+            runPiguOffersExport: $runPiguOffersExport,
             generateFailedCsv: $generateFailedCsv,
         );
 
@@ -91,6 +96,17 @@ class DailySyncCommand extends Command
             $this->line('Sync job ID: '.$export['sync_job_id']);
             $this->line('Exported variants: '.$export['exported_variants']);
             $this->line('Skipped variants: '.$export['skipped_variants']);
+            $this->line('Feed path: '.$export['feed_path']);
+            $this->line('Public URL: '.$export['public_url']);
+            $this->newLine();
+        }
+
+        if (isset($result->summary['pigu_offers_export'])) {
+            $export = $result->summary['pigu_offers_export'];
+            $this->components->info('Pigu offers export');
+            $this->line('Exported offers: '.$export['offers_exported']);
+            $this->line('Supplier-only offers: '.($export['supplier_only_offers_count'] ?? 0));
+            $this->line('Skipped: '.$export['offers_skipped']);
             $this->line('Feed path: '.$export['feed_path']);
             $this->line('Public URL: '.$export['public_url']);
             $this->newLine();

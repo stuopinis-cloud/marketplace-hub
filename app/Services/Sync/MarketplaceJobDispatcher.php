@@ -84,6 +84,7 @@ class MarketplaceJobDispatcher
         bool $runSupplierSync = true,
         bool $runReadinessRefresh = true,
         bool $runVarleExport = true,
+        bool $runPiguOffersExport = false,
         bool $generateFailedCsv = true,
     ): JobDispatchResult {
         if (MarketplaceJobLock::isLocked(MarketplaceJobLock::MARKETPLACE_DAILY_SYNC)
@@ -103,6 +104,7 @@ class MarketplaceJobDispatcher
                 'run_supplier_sync' => $runSupplierSync,
                 'run_readiness_refresh' => $runReadinessRefresh,
                 'run_varle_export' => $runVarleExport,
+                'run_pigu_offers_export' => $runPiguOffersExport,
                 'generate_failed_csv' => $generateFailedCsv,
             ],
         ]);
@@ -113,6 +115,7 @@ class MarketplaceJobDispatcher
             $runSupplierSync,
             $runReadinessRefresh,
             $runVarleExport,
+            $runPiguOffersExport,
             $generateFailedCsv,
         );
 

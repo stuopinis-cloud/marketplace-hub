@@ -22,6 +22,7 @@ class RunNowAction
                     runSupplierSync: (bool) ($record->run_supplier_sync ?? true),
                     runReadinessRefresh: true,
                     runVarleExport: (bool) $record->run_varle_export,
+                    runPiguOffersExport: (bool) ($record->run_pigu_offers_export ?? false),
                     generateFailedCsv: (bool) $record->generate_failed_csv,
                 );
 

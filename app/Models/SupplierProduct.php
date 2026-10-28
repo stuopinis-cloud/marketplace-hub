@@ -31,6 +31,8 @@ class SupplierProduct extends Model
         'supplier_id',
         'product_variant_id',
         'supplier_sku',
+        'barcode',
+        'title',
         'stock_quantity',
         'availability_status',
         'raw_payload',

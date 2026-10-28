@@ -5,6 +5,8 @@ namespace App\Services\Marketplace\Pigu;
 use App\Enums\FeedFileStatus;
 use App\Models\Product;
 use App\Models\ProductVariant;
+use App\Models\Supplier;
+use App\Models\SupplierProduct;
 use App\Services\Marketplace\ProductAvailabilityResolver;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\File;
@@ -27,6 +29,8 @@ class PiguOfferFeedExporter
 
     public const string HOURS_SOURCE_SUPPLIER = 'supplier';
 
+    public const string HOURS_SOURCE_SUPPLIER_ONLY = 'supplier_only';
+
     public const string HOURS_SOURCE_BACKORDER = 'backorder';
 
     public const string FAILED_CSV_PATH = 'exports/pigu_offers_failed_latest.csv';
@@ -42,12 +46,15 @@ class PiguOfferFeedExporter
 
     private int $consideredVariants = 0;
 
+    private int $consideredSupplierOnly = 0;
+
     private int $duplicateEanCount = 0;
 
     public function __construct(
         private readonly PiguProductFeedExporter $products,
         private readonly PiguReadinessService $readiness,
         private readonly ProductAvailabilityResolver $availability,
+        private readonly PiguSupplierPriceCalculator $priceCalculator = new PiguSupplierPriceCalculator,
     ) {}
 
     /**
@@ -64,6 +71,7 @@ class PiguOfferFeedExporter
      *     offers_by_collectionhours: array<string, int>,
      *     local_offers_count: int,
      *     supplier_offers_count: int,
+     *     supplier_only_offers_count: int,
      *     backorder_offers_count: int,
      *     unique_sku_count: int,
      *     unique_ean_count: int,
@@ -78,6 +86,7 @@ class PiguOfferFeedExporter
         $this->seenSkus = [];
         $this->skippedRows = [];
         $this->consideredVariants = 0;
+        $this->consideredSupplierOnly = 0;
         $this->duplicateEanCount = 0;
 
         $channel = $this->products->resolveChannel();
@@ -103,6 +112,7 @@ class PiguOfferFeedExporter
         $offersByCollectionHours = [];
         $localOffers = 0;
         $supplierOffers = 0;
+        $supplierOnlyOffers = 0;
         $backorderOffers = 0;
 
         $handle = fopen($tempAbsolute, 'w');
@@ -202,6 +212,17 @@ class PiguOfferFeedExporter
                 }
             });
 
+            // Supplier-only offers (no Shopify product) from Pigu-enabled XML suppliers.
+            $this->exportSupplierOnlyOffers(
+                $handle,
+                $config,
+                $exported,
+                $skipped,
+                $skippedByCode,
+                $offersByCollectionHours,
+                $supplierOnlyOffers,
+            );
+
             fwrite($handle, "</products>\n");
         } finally {
             fclose($handle);
@@ -264,11 +285,156 @@ class PiguOfferFeedExporter
             'offers_by_collectionhours' => $offersByCollectionHours,
             'local_offers_count' => $localOffers,
             'supplier_offers_count' => $supplierOffers,
+            'supplier_only_offers_count' => $supplierOnlyOffers,
             'backorder_offers_count' => $backorderOffers,
+            'supplier_only_considered' => $this->consideredSupplierOnly,
             'unique_sku_count' => count($this->seenSkus),
             'unique_ean_count' => count($this->seenEans),
             'duplicate_ean_count' => $this->duplicateEanCount,
             'failed_csv_path' => $failedCsvRelative,
+        ];
+    }
+
+    /**
+     * Append offers for supplier products that have no Shopify variant match.
+     *
+     * @param  resource  $handle
+     * @param  array<string, mixed>  $config
+     * @param  array<string, int>  $skippedByCode
+     * @param  array<string, int>  $offersByCollectionHours
+     */
+    private function exportSupplierOnlyOffers(
+        $handle,
+        array $config,
+        int &$exported,
+        int &$skipped,
+        array &$skippedByCode,
+        array &$offersByCollectionHours,
+        int &$supplierOnlyOffers,
+    ): void {
+        $suppliers = Supplier::query()
+            ->where('enabled', true)
+            ->orderBy('stock_priority')
+            ->orderBy('id')
+            ->get()
+            ->filter(fn (Supplier $supplier): bool => PiguSupplierOfferConfig::isEnabled($supplier)
+                && PiguSupplierOfferConfig::exportSupplierOnly($supplier));
+
+        foreach ($suppliers as $supplier) {
+            SupplierProduct::query()
+                ->where('supplier_id', $supplier->id)
+                ->whereNull('product_variant_id')
+                ->where('enabled', true)
+                ->orderBy('id')
+                ->chunkById(200, function ($products) use (
+                    $handle,
+                    $supplier,
+                    &$exported,
+                    &$skipped,
+                    &$skippedByCode,
+                    &$offersByCollectionHours,
+                    &$supplierOnlyOffers,
+                ): void {
+                    foreach ($products as $product) {
+                        $this->consideredSupplierOnly++;
+                        $built = $this->buildSupplierOnlyOfferRow($product, $supplier);
+
+                        if (! ($built['ok'] ?? false)) {
+                            $code = (string) ($built['code'] ?? 'invalid_offer');
+                            $skipped++;
+                            $skippedByCode[$code] = ($skippedByCode[$code] ?? 0) + 1;
+                            if ($code === 'duplicate_ean') {
+                                $this->duplicateEanCount++;
+                            }
+                            $this->recordSupplierOnlySkip($product, $supplier, $code);
+
+                            continue;
+                        }
+
+                        fwrite($handle, $built['xml']);
+                        $exported++;
+                        $supplierOnlyOffers++;
+
+                        $this->seenSkus[(string) $built['sku']] = true;
+                        $this->seenEans[(string) $built['ean']] = -1 * (int) $product->id;
+
+                        $hoursKey = (string) $built['collection_hours'];
+                        $offersByCollectionHours[$hoursKey] = ($offersByCollectionHours[$hoursKey] ?? 0) + 1;
+                    }
+                });
+        }
+    }
+
+    /**
+     * @return array{
+     *     ok: true,
+     *     xml: string,
+     *     sku: string,
+     *     ean: string,
+     *     collection_hours: int,
+     *     hours_source: string
+     * }|array{ok: false, code: string}
+     */
+    private function buildSupplierOnlyOfferRow(SupplierProduct $product, Supplier $supplier): array
+    {
+        if ($product->isStale()) {
+            return ['ok' => false, 'code' => 'stale_supplier_stock'];
+        }
+
+        $sku = trim((string) ($product->supplier_sku ?? ''));
+        $rawBarcode = trim((string) ($product->barcode ?? ''));
+        $ean = preg_replace('/\D+/', '', $rawBarcode) ?? '';
+        $stock = max(0, (int) ($product->stock_quantity ?? 0));
+        $price = $this->priceCalculator->calculate(
+            $product->price !== null ? (float) $product->price : null,
+            $supplier,
+        );
+        $hours = PiguSupplierOfferConfig::collectionHours($supplier);
+
+        if ($sku === '') {
+            return ['ok' => false, 'code' => 'missing_sku'];
+        }
+
+        if ($rawBarcode === '' || $ean === '') {
+            return ['ok' => false, 'code' => 'missing_ean'];
+        }
+
+        if (! preg_match('/^\d{11,13}$/', $ean)) {
+            return ['ok' => false, 'code' => 'invalid_ean'];
+        }
+
+        if (isset($this->seenEans[$ean])) {
+            return ['ok' => false, 'code' => 'duplicate_ean'];
+        }
+
+        if (isset($this->seenSkus[$sku])) {
+            return ['ok' => false, 'code' => 'duplicate_sku'];
+        }
+
+        if ($price === null || $price <= 0) {
+            return ['ok' => false, 'code' => 'invalid_price'];
+        }
+
+        if ($stock <= 0) {
+            return ['ok' => false, 'code' => 'no_exportable_stock'];
+        }
+
+        $xml = "  <product>\n";
+        $xml .= '    <sku>'.$this->cdata($sku)."</sku>\n";
+        $xml .= '    <ean>'.$this->cdata($ean)."</ean>\n";
+        $xml .= '    <price-before-discount>'.$this->decimal($price)."</price-before-discount>\n";
+        $xml .= '    <price-after-discount>'.$this->decimal($price)."</price-after-discount>\n";
+        $xml .= '    <stock>'.$stock."</stock>\n";
+        $xml .= '    <collectionhours>'.$hours."</collectionhours>\n";
+        $xml .= "  </product>\n";
+
+        return [
+            'ok' => true,
+            'xml' => $xml,
+            'sku' => $sku,
+            'ean' => $ean,
+            'collection_hours' => $hours,
+            'hours_source' => self::HOURS_SOURCE_SUPPLIER_ONLY,
         ];
     }
 
@@ -390,7 +556,12 @@ class PiguOfferFeedExporter
             ProductAvailabilityResolver::SOURCE_SUPPLIER,
             ProductAvailabilityResolver::SOURCE_SUPPLIER_AVAILABILITY_FALLBACK,
         ], true)) {
-            return ['hours' => $supplierHours, 'source' => self::HOURS_SOURCE_SUPPLIER];
+            $hours = $this->resolveSupplierCollectionHours(
+                isset($resolved['supplier_id']) ? (int) $resolved['supplier_id'] : null,
+                $supplierHours,
+            );
+
+            return ['hours' => $hours, 'source' => self::HOURS_SOURCE_SUPPLIER];
         }
 
         if ($sourceType === ProductAvailabilityResolver::SOURCE_BACKORDER) {
@@ -403,6 +574,21 @@ class PiguOfferFeedExporter
         }
 
         return null;
+    }
+
+    private function resolveSupplierCollectionHours(?int $supplierId, int $defaultHours): int
+    {
+        if ($supplierId === null) {
+            return $defaultHours;
+        }
+
+        $supplier = Supplier::query()->find($supplierId);
+
+        if (! $supplier instanceof Supplier || ! PiguSupplierOfferConfig::isEnabled($supplier)) {
+            return $defaultHours;
+        }
+
+        return PiguSupplierOfferConfig::collectionHours($supplier);
     }
 
     private function isExcludedFromPigu(Product $product, ProductVariant $variant): bool
@@ -431,6 +617,25 @@ class PiguOfferFeedExporter
             'supplier_stock' => $resolved['supplier_quantity'] ?? null,
             'inventory_policy' => $variant->inventory_policy,
             'stock_source' => $resolved['source_type'] ?? $resolved['source'] ?? null,
+            'skip_reason' => $code,
+        ];
+    }
+
+    private function recordSupplierOnlySkip(SupplierProduct $product, Supplier $supplier, string $code): void
+    {
+        $this->skippedRows[] = [
+            'product_id' => null,
+            'variant_id' => null,
+            'product_title' => $product->title ?? $supplier->name,
+            'variant_title' => null,
+            'vendor' => $supplier->name,
+            'sku' => $product->supplier_sku,
+            'ean' => $product->barcode,
+            'price' => $product->price,
+            'local_stock' => 0,
+            'supplier_stock' => $product->stock_quantity,
+            'inventory_policy' => null,
+            'stock_source' => self::HOURS_SOURCE_SUPPLIER_ONLY,
             'skip_reason' => $code,
         ];
     }

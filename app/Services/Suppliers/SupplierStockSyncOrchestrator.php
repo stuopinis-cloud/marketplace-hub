@@ -217,6 +217,14 @@ class SupplierStockSyncOrchestrator
     {
         $now = now();
 
+        $barcode = isset($entry['barcode'])
+            ? trim((string) $entry['barcode'])
+            : trim((string) ($entry['raw_payload']['barcode'] ?? ''));
+        $title = isset($entry['title'])
+            ? trim((string) $entry['title'])
+            : trim((string) ($entry['raw_payload']['title'] ?? ''));
+        $price = $entry['price'] ?? null;
+
         return SupplierProduct::query()->updateOrCreate(
             [
                 'supplier_id' => $supplier->id,
@@ -224,6 +232,9 @@ class SupplierStockSyncOrchestrator
             ],
             [
                 'product_variant_id' => $match['variant']?->id,
+                'barcode' => $barcode !== '' ? $barcode : null,
+                'title' => $title !== '' ? $title : null,
+                'price' => is_numeric($price) ? (float) $price : null,
                 'stock_quantity' => $entry['stock_quantity'],
                 'availability_status' => $entry['availability_status'],
                 'raw_payload' => $entry['raw_payload'],

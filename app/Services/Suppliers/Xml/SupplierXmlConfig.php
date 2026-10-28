@@ -42,6 +42,11 @@ class SupplierXmlConfig
         return self::filledString($supplier, 'xml_title_path');
     }
 
+    public static function pricePath(Supplier $supplier): ?string
+    {
+        return self::filledString($supplier, 'xml_price_path');
+    }
+
     /**
      * @return array<string, string>
      */

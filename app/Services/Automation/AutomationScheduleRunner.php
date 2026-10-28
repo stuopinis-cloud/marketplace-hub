@@ -87,6 +87,7 @@ class AutomationScheduleRunner
             runSupplierSync: (bool) ($schedule->run_supplier_sync ?? true),
             runReadinessRefresh: true,
             runVarleExport: $schedule->run_varle_export,
+            runPiguOffersExport: (bool) ($schedule->run_pigu_offers_export ?? false),
             generateFailedCsv: $schedule->generate_failed_csv,
         );
 

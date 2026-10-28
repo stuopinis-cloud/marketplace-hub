@@ -25,6 +25,7 @@ class RunDailyMarketplaceSyncJob implements ShouldQueue
         public readonly bool $runSupplierSync = true,
         public readonly bool $runReadinessRefresh = true,
         public readonly bool $runVarleExport = true,
+        public readonly bool $runPiguOffersExport = false,
         public readonly bool $generateFailedCsv = true,
     ) {}
 
@@ -63,6 +64,7 @@ class RunDailyMarketplaceSyncJob implements ShouldQueue
                 runSupplierSync: $this->runSupplierSync,
                 runReadinessRefresh: $this->runReadinessRefresh,
                 runVarleExport: $this->runVarleExport,
+                runPiguOffersExport: $this->runPiguOffersExport,
                 generateFailedCsv: $this->generateFailedCsv,
             );
 
