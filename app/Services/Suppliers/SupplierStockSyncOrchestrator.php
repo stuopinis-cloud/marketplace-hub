@@ -235,6 +235,9 @@ class SupplierStockSyncOrchestrator
                 'barcode' => $barcode !== '' ? $barcode : null,
                 'title' => $title !== '' ? $title : null,
                 'price' => is_numeric($price) ? (float) $price : null,
+                'currency' => isset($entry['currency']) && is_string($entry['currency']) && $entry['currency'] !== ''
+                    ? mb_strtoupper($entry['currency'])
+                    : ($entry['raw_payload']['currency'] ?? null),
                 'stock_quantity' => $entry['stock_quantity'],
                 'availability_status' => $entry['availability_status'],
                 'raw_payload' => $entry['raw_payload'],

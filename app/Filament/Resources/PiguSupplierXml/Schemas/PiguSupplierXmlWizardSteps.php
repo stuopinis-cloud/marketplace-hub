@@ -134,6 +134,7 @@ class PiguSupplierXmlWizardSteps
                         Hidden::make('pigu_item_count')->dehydrated(false),
                         Hidden::make('pigu_available_fields')->dehydrated(false),
                         Hidden::make('pigu_preview_rows')->dehydrated(false),
+                        Hidden::make('config.xml_namespaces'),
                         Actions::make([
                             Action::make('autodetectFields')
                                 ->label('Aptikti laukus ir peržiūrėti XML')
@@ -157,8 +158,9 @@ class PiguSupplierXmlWizardSteps
                     ->getOptionLabelUsing(fn (?string $value): ?string => filled($value) ? (string) $value : null)
                     ->helperText('Pasirinkite iš aptiktų blokų. Jei sąraše nėra — įveskite kelią lauke žemiau.')
                     ->live()
-                    ->afterStateUpdated(function (?string $state, Get $get, Set $set): void {
+                    ->afterStateUpdated(function (?string $state, Get $get, Set $set) use ($getLivewire): void {
                         self::refreshCountsForSelectedPath($state, $get, $set);
+                        self::refreshFieldsForSelectedPath($state, $get, $set, $getLivewire);
                     })
                     ->rules([
                         fn (Get $get): \Closure => function (string $attribute, mixed $value, \Closure $fail) use ($get): void {
@@ -209,26 +211,51 @@ class PiguSupplierXmlWizardSteps
                     ->label('SKU laukas')
                     ->required()
                     ->searchable()
-                    ->options(fn (Get $get): array => self::fieldOptions($get)),
+                    ->options(fn (Get $get): array => self::fieldOptions($get))
+                    ->getOptionLabelUsing(fn (?string $value): ?string => filled($value) ? (string) $value : null)
+                    ->helperText('Google Merchant: paprastai g:id'),
                 Select::make('config.xml_barcode_path')
                     ->label('EAN / barkodas')
                     ->required()
                     ->searchable()
-                    ->options(fn (Get $get): array => self::fieldOptions($get)),
+                    ->options(fn (Get $get): array => self::fieldOptions($get))
+                    ->getOptionLabelUsing(fn (?string $value): ?string => filled($value) ? (string) $value : null)
+                    ->helperText('Google Merchant: paprastai g:gtin'),
                 Select::make('config.xml_stock_path')
-                    ->label('Likutis')
+                    ->label('Likutis / prieinamumas')
                     ->required()
                     ->searchable()
-                    ->options(fn (Get $get): array => self::fieldOptions($get)),
+                    ->options(fn (Get $get): array => self::fieldOptions($get))
+                    ->getOptionLabelUsing(fn (?string $value): ?string => filled($value) ? (string) $value : null)
+                    ->helperText('Jei XML turi tik „in stock / out of stock“ (pvz. g:availability) — pasirinkite tą lauką. Skaitinis kiekis nebus išgalvotas.')
+                    ->live()
+                    ->afterStateUpdated(function (?string $state, Set $set): void {
+                        $local = str_contains((string) $state, ':')
+                            ? (string) explode(':', (string) $state, 2)[1]
+                            : (string) $state;
+                        if (strcasecmp($local, 'availability') === 0) {
+                            $set('config.xml_availability_path', $state);
+                        }
+                    }),
+                Select::make('config.xml_availability_path')
+                    ->label('Prieinamumo laukas (neprivaloma)')
+                    ->searchable()
+                    ->options(fn (Get $get): array => self::fieldOptions($get))
+                    ->getOptionLabelUsing(fn (?string $value): ?string => filled($value) ? (string) $value : null)
+                    ->helperText('Jei likutis ir prieinamumas atskiri — čia pasirinkite g:availability.'),
                 Select::make('config.xml_price_path')
                     ->label('Rekomenduojama mažmeninė kaina')
                     ->required()
                     ->searchable()
-                    ->options(fn (Get $get): array => self::fieldOptions($get)),
+                    ->options(fn (Get $get): array => self::fieldOptions($get))
+                    ->getOptionLabelUsing(fn (?string $value): ?string => filled($value) ? (string) $value : null)
+                    ->helperText('Google Merchant: g:price (pvz. „32.71 EUR“)'),
                 Select::make('config.xml_title_path')
                     ->label('Produkto pavadinimas (neprivaloma)')
                     ->searchable()
-                    ->options(fn (Get $get): array => self::fieldOptions($get)),
+                    ->options(fn (Get $get): array => self::fieldOptions($get))
+                    ->getOptionLabelUsing(fn (?string $value): ?string => filled($value) ? (string) $value : null)
+                    ->helperText('Google Merchant: g:title'),
                 Placeholder::make('preview_table')
                     ->label('Peržiūra (iki 10 produktų)')
                     ->content(fn (Get $get): HtmlString => self::previewTableHtml($get('pigu_preview_rows') ?? []))
@@ -303,8 +330,14 @@ class PiguSupplierXmlWizardSteps
                     ->numeric()
                     ->default(2880)
                     ->helperText('Pasibaigus — tiekėjo likutis laikomas pasenusiu ir neeksportuojamas.'),
+                TextInput::make('availability_fallback_quantity')
+                    ->label('Kiekis, kai XML sako tik „in stock“')
+                    ->numeric()
+                    ->default(5)
+                    ->required()
+                    ->helperText('Kai tiekėjas neduoda skaitinio likučio, o tik būseną „in stock“, eksportui naudojamas šis kiekis. Tai nėra tikras tiekėjo sandėlio skaičius — tik administratoriaus nustatymas. „preorder“ / „backorder“ automatiškai nelaikomi turimu likučiu.'),
                 Placeholder::make('stock_priority_note')
-                    ->content('Vietinis Shopify likutis > 0 visada turi prioritetą (24 val.). Shopify kaina niekada nekeičiama tiekėjo kaina.')
+                    ->content('Vietinis Shopify likutis > 0 visada turi prioritetą (24 val.). Shopify kaina niekada nekeičiama tiekėjo kaina. Jei šaltinio kaina jau su PVM — kainodaros žingsnyje pažymėkite „Šaltinio kaina jau su PVM“, kad PVM nebūtų pridedamas antrą kartą.')
                     ->columnSpanFull(),
             ]);
     }
@@ -416,8 +449,10 @@ class PiguSupplierXmlWizardSteps
         $set('config.xml_sku_path', $detected['sku_path']);
         $set('config.xml_barcode_path', $detected['barcode_path']);
         $set('config.xml_stock_path', $detected['stock_path']);
+        $set('config.xml_availability_path', $detected['availability_path'] ?? null);
         $set('config.xml_price_path', $detected['price_path']);
         $set('config.xml_title_path', $detected['title_path']);
+        $set('config.xml_namespaces', $detected['namespaces'] ?? []);
         $set('pigu_preview_rows', $detected['preview_rows']);
         $set('pigu_available_fields', $detected['available_fields']);
         $set('pigu_item_count', $detected['item_count']);
@@ -453,6 +488,41 @@ class PiguSupplierXmlWizardSteps
             $set('pigu_manual_item_path', $path);
 
             return;
+        }
+    }
+
+    private static function refreshFieldsForSelectedPath(
+        ?string $state,
+        Get $get,
+        Set $set,
+        ?callable $getLivewire,
+    ): void {
+        $path = trim((string) $state);
+        $url = trim((string) $get('endpoint_url'));
+        if ($path === '' || $url === '') {
+            return;
+        }
+
+        try {
+            $xml = app(SupplierXmlFeedClient::class)->fetch($url);
+            $candidates = $get('pigu_item_path_candidates') ?? [];
+            $detected = app(PiguSupplierXmlFieldDetector::class)->detectForItemPath(
+                $xml,
+                $path,
+                is_array($candidates) ? $candidates : [],
+            );
+
+            if (($detected['item_count'] ?? 0) <= 0) {
+                $set('pigu_available_fields', []);
+                $set('pigu_preview_rows', []);
+                $set('pigu_item_count', 0);
+
+                return;
+            }
+
+            self::applyDetectionToForm($detected, $set, $getLivewire);
+        } catch (Throwable) {
+            // Keep previous mappings if refresh fetch fails; admin can re-run detection.
         }
     }
 
@@ -528,6 +598,7 @@ class PiguSupplierXmlWizardSteps
             'config.xml_sku_path',
             'config.xml_barcode_path',
             'config.xml_stock_path',
+            'config.xml_availability_path',
             'config.xml_price_path',
             'config.xml_title_path',
         ] as $key) {
