@@ -2,6 +2,7 @@
 
 use App\Http\Controllers\CategoryMappingImportFailedController;
 use App\Http\Controllers\HealthController;
+use App\Http\Controllers\PiguSupplierOfferPreviewController;
 use App\Http\Controllers\PublicFeedController;
 use App\Http\Controllers\VarleFailedExportController;
 use Illuminate\Support\Facades\Route;
@@ -26,3 +27,15 @@ Route::middleware('auth')->get(
     '/exports/category-mapping-import-failed/{filename}',
     [CategoryMappingImportFailedController::class, 'download'],
 )->where('filename', '[A-Za-z0-9_\-]+\.csv')->name('exports.category-mapping-import-failed');
+
+Route::middleware('auth')->group(function (): void {
+    Route::get(
+        '/exports/pigu-supplier-preview/{supplier}/offers.xml',
+        [PiguSupplierOfferPreviewController::class, 'downloadXml'],
+    )->name('exports.pigu-supplier-preview.xml');
+
+    Route::get(
+        '/exports/pigu-supplier-preview/{supplier}/skipped.csv',
+        [PiguSupplierOfferPreviewController::class, 'downloadSkippedCsv'],
+    )->name('exports.pigu-supplier-preview.skipped');
+});

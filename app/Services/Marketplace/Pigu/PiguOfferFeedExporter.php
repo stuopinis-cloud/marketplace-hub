@@ -35,6 +35,10 @@ class PiguOfferFeedExporter
 
     public const string FAILED_CSV_PATH = 'exports/pigu_offers_failed_latest.csv';
 
+    public const string PREVIEW_DISK = 'local';
+
+    public const string PRODUCTION_FEED_RELATIVE = 'feeds/pigu-offers.xml';
+
     /** @var array<string, int> */
     private array $seenEans = [];
 
@@ -44,11 +48,16 @@ class PiguOfferFeedExporter
     /** @var list<array<string, mixed>> */
     private array $skippedRows = [];
 
+    /** @var list<array<string, mixed>> */
+    private array $exportedRows = [];
+
     private int $consideredVariants = 0;
 
     private int $consideredSupplierOnly = 0;
 
     private int $duplicateEanCount = 0;
+
+    private ?PiguExportOptions $activeOptions = null;
 
     public function __construct(
         private readonly PiguProductFeedExporter $products,
@@ -57,12 +66,20 @@ class PiguOfferFeedExporter
         private readonly PiguSupplierPriceCalculator $priceCalculator = new PiguSupplierPriceCalculator,
     ) {}
 
+    public static function previewDirectory(int $supplierId): string
+    {
+        return 'pigu-previews/supplier-'.$supplierId;
+    }
+
     /**
      * @return array{
      *     channel_id: int,
      *     feed_path: string,
      *     absolute_path: string,
-     *     public_url: string,
+     *     public_url: string|null,
+     *     disk: string,
+     *     preview: bool,
+     *     preview_supplier_id: int|null,
      *     filter: array{easy_only: bool, all_valid: bool},
      *     variants_considered: int,
      *     offers_exported: int,
@@ -76,31 +93,47 @@ class PiguOfferFeedExporter
      *     unique_sku_count: int,
      *     unique_ean_count: int,
      *     duplicate_ean_count: int,
-     *     failed_csv_path: string
+     *     failed_csv_path: string,
+     *     exported_rows: list<array<string, mixed>>,
+     *     skipped_rows: list<array<string, mixed>>
      * }
      */
     public function export(?PiguExportOptions $options = null): array
     {
         $options ??= new PiguExportOptions;
+        $this->activeOptions = $options;
         $this->seenEans = [];
         $this->seenSkus = [];
         $this->skippedRows = [];
+        $this->exportedRows = [];
         $this->consideredVariants = 0;
         $this->consideredSupplierOnly = 0;
         $this->duplicateEanCount = 0;
 
+        if ($options->preview && $options->previewSupplierId === null) {
+            throw new RuntimeException('Preview export requires preview_supplier_id.');
+        }
+
         $channel = $this->products->resolveChannel();
         $config = $this->products->channelConfig($channel);
 
-        $relativePath = (string) ($config['offers_feed_path'] ?? 'feeds/pigu-offers.xml');
-        $tempPath = (string) ($config['offers_feed_temp_path'] ?? 'feeds/pigu-offers.xml.tmp');
+        $isPreview = $options->isPreview();
+        $diskName = $isPreview ? self::PREVIEW_DISK : 'public';
+        $disk = Storage::disk($diskName);
 
-        $easyEligibleHandles = (! $options->allValid && $options->easyOnly)
-            ? $this->products->easyOnlyCollectionHandles($channel)
-            : null;
+        if ($isPreview) {
+            $previewDir = self::previewDirectory((int) $options->previewSupplierId);
+            $relativePath = $previewDir.'/offers.xml';
+            $tempPath = $previewDir.'/offers.xml.tmp';
+            $failedCsvRelative = $previewDir.'/skipped.csv';
+            $disk->makeDirectory($previewDir);
+        } else {
+            $relativePath = (string) ($config['offers_feed_path'] ?? self::PRODUCTION_FEED_RELATIVE);
+            $tempPath = (string) ($config['offers_feed_temp_path'] ?? 'feeds/pigu-offers.xml.tmp');
+            $failedCsvRelative = (string) ($config['offers_failed_csv_path'] ?? self::FAILED_CSV_PATH);
+            $disk->makeDirectory('feeds');
+        }
 
-        $disk = Storage::disk('public');
-        $disk->makeDirectory('feeds');
         $disk->delete($tempPath);
 
         $tempAbsolute = $disk->path($tempPath);
@@ -127,6 +160,10 @@ class PiguOfferFeedExporter
             $query = Product::query()
                 ->with(['variants.inventoryLevels', 'variants.supplierProducts.supplier', 'sourceCategories'])
                 ->orderBy('id');
+
+            $easyEligibleHandles = (! $options->allValid && $options->easyOnly)
+                ? $this->products->easyOnlyCollectionHandles($channel)
+                : null;
 
             if (! $options->allValid && $options->easyOnly) {
                 $handles = $easyEligibleHandles ?? [];
@@ -191,23 +228,28 @@ class PiguOfferFeedExporter
                             continue;
                         }
 
-                        fwrite($handle, $built['xml']);
-                        $exported++;
+                        $this->recordExportedOffer($built, $variant->id);
+
+                        // Preview XML contains only this supplier's contribution; production writes all.
+                        if ($this->shouldWriteOfferXml($built, $options)) {
+                            fwrite($handle, $built['xml']);
+                            $exported++;
+
+                            $hoursKey = (string) $built['collection_hours'];
+                            $offersByCollectionHours[$hoursKey] = ($offersByCollectionHours[$hoursKey] ?? 0) + 1;
+
+                            match ($built['hours_source']) {
+                                self::HOURS_SOURCE_LOCAL => $localOffers++,
+                                self::HOURS_SOURCE_SUPPLIER => $supplierOffers++,
+                                self::HOURS_SOURCE_BACKORDER => $backorderOffers++,
+                                default => null,
+                            };
+                        }
 
                         $sku = (string) $built['sku'];
                         $ean = (string) $built['ean'];
                         $this->seenSkus[$sku] = true;
                         $this->seenEans[$ean] = $variant->id;
-
-                        $hoursKey = (string) $built['collection_hours'];
-                        $offersByCollectionHours[$hoursKey] = ($offersByCollectionHours[$hoursKey] ?? 0) + 1;
-
-                        match ($built['hours_source']) {
-                            self::HOURS_SOURCE_LOCAL => $localOffers++,
-                            self::HOURS_SOURCE_SUPPLIER => $supplierOffers++,
-                            self::HOURS_SOURCE_BACKORDER => $backorderOffers++,
-                            default => null,
-                        };
                     }
                 }
             });
@@ -238,42 +280,51 @@ class PiguOfferFeedExporter
         File::replace($finalAbsolute, $xml);
         File::delete($tempAbsolute);
 
-        $this->writeSkippedCsv($config);
+        $this->writeSkippedCsv($failedCsvRelative, $diskName, $options);
 
-        $offersFilename = 'pigu-offers.xml';
-        $offersPath = 'feeds/pigu-offers.xml';
-        $offersPublicUrl = 'https://hub.gudle.lt/feeds/pigu-offers.xml';
+        $offersPublicUrl = null;
 
-        $now = now();
+        if (! $isPreview) {
+            $offersFilename = 'pigu-offers.xml';
+            $offersPath = self::PRODUCTION_FEED_RELATIVE;
+            $offersPublicUrl = 'https://hub.gudle.lt/feeds/pigu-offers.xml';
 
-        DB::table('feed_files')->updateOrInsert(
-            [
-                'marketplace_channel_id' => $channel->id,
-                'filename' => $offersFilename,
-            ],
-            [
-                'path' => $offersPath,
-                'public_url' => $offersPublicUrl,
-                'status' => FeedFileStatus::Generated->value,
-                'generated_at' => $now,
-                'created_at' => DB::table('feed_files')
-                    ->where('marketplace_channel_id', $channel->id)
-                    ->where('filename', $offersFilename)
-                    ->value('created_at') ?: $now,
-                'updated_at' => $now,
-            ],
-        );
+            $now = now();
+
+            DB::table('feed_files')->updateOrInsert(
+                [
+                    'marketplace_channel_id' => $channel->id,
+                    'filename' => $offersFilename,
+                ],
+                [
+                    'path' => $offersPath,
+                    'public_url' => $offersPublicUrl,
+                    'status' => FeedFileStatus::Generated->value,
+                    'generated_at' => $now,
+                    'created_at' => DB::table('feed_files')
+                        ->where('marketplace_channel_id', $channel->id)
+                        ->where('filename', $offersFilename)
+                        ->value('created_at') ?: $now,
+                    'updated_at' => $now,
+                ],
+            );
+        }
 
         ksort($offersByCollectionHours, SORT_NUMERIC);
         ksort($skippedByCode);
 
-        $failedCsvRelative = (string) ($config['offers_failed_csv_path'] ?? self::FAILED_CSV_PATH);
+        $absolutePath = $isPreview
+            ? storage_path('app/private/'.$relativePath)
+            : storage_path('app/public/'.$relativePath);
 
         return [
             'channel_id' => $channel->id,
             'feed_path' => $relativePath,
-            'absolute_path' => storage_path('app/public/'.$relativePath),
+            'absolute_path' => $absolutePath,
             'public_url' => $offersPublicUrl,
+            'disk' => $diskName,
+            'preview' => $isPreview,
+            'preview_supplier_id' => $options->previewSupplierId,
             'filter' => [
                 'easy_only' => $options->easyOnly,
                 'all_valid' => $options->allValid,
@@ -292,6 +343,8 @@ class PiguOfferFeedExporter
             'unique_ean_count' => count($this->seenEans),
             'duplicate_ean_count' => $this->duplicateEanCount,
             'failed_csv_path' => $failedCsvRelative,
+            'exported_rows' => $this->exportedRows,
+            'skipped_rows' => $this->skippedRows,
         ];
     }
 
@@ -312,12 +365,16 @@ class PiguOfferFeedExporter
         array &$offersByCollectionHours,
         int &$supplierOnlyOffers,
     ): void {
+        unset($config);
+
+        $options = $this->activeOptions ?? new PiguExportOptions;
+
         $suppliers = Supplier::query()
             ->where('enabled', true)
             ->orderBy('stock_priority')
             ->orderBy('id')
             ->get()
-            ->filter(fn (Supplier $supplier): bool => PiguSupplierOfferConfig::isEnabled($supplier)
+            ->filter(fn (Supplier $supplier): bool => $this->isPiguOffersActive($supplier)
                 && PiguSupplierOfferConfig::exportSupplierOnly($supplier));
 
         foreach ($suppliers as $supplier) {
@@ -329,6 +386,7 @@ class PiguOfferFeedExporter
                 ->chunkById(200, function ($products) use (
                     $handle,
                     $supplier,
+                    $options,
                     &$exported,
                     &$skipped,
                     &$skippedByCode,
@@ -351,15 +409,19 @@ class PiguOfferFeedExporter
                             continue;
                         }
 
-                        fwrite($handle, $built['xml']);
-                        $exported++;
-                        $supplierOnlyOffers++;
+                        $this->recordExportedOffer($built, null);
+
+                        if ($this->shouldWriteOfferXml($built, $options)) {
+                            fwrite($handle, $built['xml']);
+                            $exported++;
+                            $supplierOnlyOffers++;
+
+                            $hoursKey = (string) $built['collection_hours'];
+                            $offersByCollectionHours[$hoursKey] = ($offersByCollectionHours[$hoursKey] ?? 0) + 1;
+                        }
 
                         $this->seenSkus[(string) $built['sku']] = true;
                         $this->seenEans[(string) $built['ean']] = -1 * (int) $product->id;
-
-                        $hoursKey = (string) $built['collection_hours'];
-                        $offersByCollectionHours[$hoursKey] = ($offersByCollectionHours[$hoursKey] ?? 0) + 1;
                     }
                 });
         }
@@ -433,8 +495,12 @@ class PiguOfferFeedExporter
             'xml' => $xml,
             'sku' => $sku,
             'ean' => $ean,
+            'price_before' => $price,
+            'price_after' => $price,
+            'stock' => $stock,
             'collection_hours' => $hours,
             'hours_source' => self::HOURS_SOURCE_SUPPLIER_ONLY,
+            'supplier_id' => $supplier->id,
         ];
     }
 
@@ -517,8 +583,12 @@ class PiguOfferFeedExporter
             'xml' => $xml,
             'sku' => $sku,
             'ean' => $ean,
+            'price_before' => $before,
+            'price_after' => $after,
+            'stock' => $stock,
             'collection_hours' => $hours['hours'],
             'hours_source' => $hours['source'],
+            'supplier_id' => isset($resolved['supplier_id']) ? (int) $resolved['supplier_id'] : null,
         ];
     }
 
@@ -584,11 +654,67 @@ class PiguOfferFeedExporter
 
         $supplier = Supplier::query()->find($supplierId);
 
-        if (! $supplier instanceof Supplier || ! PiguSupplierOfferConfig::isEnabled($supplier)) {
+        if (! $supplier instanceof Supplier || ! $this->isPiguOffersActive($supplier)) {
             return $defaultHours;
         }
 
         return PiguSupplierOfferConfig::collectionHours($supplier);
+    }
+
+    /**
+     * Treat preview focus supplier as Pigu-enabled without mutating saved config.
+     */
+    public function isPiguOffersActive(Supplier $supplier): bool
+    {
+        if (PiguSupplierOfferConfig::isEnabled($supplier)) {
+            return true;
+        }
+
+        $options = $this->activeOptions;
+
+        return $options !== null
+            && $options->isPreview()
+            && $options->previewSupplierId === $supplier->id;
+    }
+
+    /**
+     * @param  array<string, mixed>  $built
+     */
+    private function shouldWriteOfferXml(array $built, PiguExportOptions $options): bool
+    {
+        if (! $options->isPreview()) {
+            return true;
+        }
+
+        $hoursSource = (string) ($built['hours_source'] ?? '');
+        $supplierId = isset($built['supplier_id']) ? (int) $built['supplier_id'] : null;
+
+        if ($supplierId !== $options->previewSupplierId) {
+            return false;
+        }
+
+        return in_array($hoursSource, [
+            self::HOURS_SOURCE_SUPPLIER,
+            self::HOURS_SOURCE_SUPPLIER_ONLY,
+        ], true);
+    }
+
+    /**
+     * @param  array<string, mixed>  $built
+     */
+    private function recordExportedOffer(array $built, ?int $variantId): void
+    {
+        $this->exportedRows[] = [
+            'variant_id' => $variantId,
+            'sku' => (string) ($built['sku'] ?? ''),
+            'ean' => (string) ($built['ean'] ?? ''),
+            'price_before' => $built['price_before'] ?? null,
+            'price_after' => $built['price_after'] ?? null,
+            'stock' => $built['stock'] ?? null,
+            'collection_hours' => $built['collection_hours'] ?? null,
+            'hours_source' => $built['hours_source'] ?? null,
+            'supplier_id' => isset($built['supplier_id']) ? (int) $built['supplier_id'] : null,
+        ];
     }
 
     private function isExcludedFromPigu(Product $product, ProductVariant $variant): bool
@@ -604,6 +730,17 @@ class PiguOfferFeedExporter
      */
     private function recordSkip(Product $product, ProductVariant $variant, string $code, array $resolved): void
     {
+        $supplierId = isset($resolved['supplier_id']) ? (int) $resolved['supplier_id'] : null;
+
+        if ($supplierId === null) {
+            $matched = $variant->relationLoaded('supplierProducts')
+                ? $variant->supplierProducts->first()
+                : $variant->supplierProducts()->first();
+            if ($matched instanceof SupplierProduct) {
+                $supplierId = (int) $matched->supplier_id;
+            }
+        }
+
         $this->skippedRows[] = [
             'product_id' => $product->id,
             'variant_id' => $variant->id,
@@ -618,6 +755,7 @@ class PiguOfferFeedExporter
             'inventory_policy' => $variant->inventory_policy,
             'stock_source' => $resolved['source_type'] ?? $resolved['source'] ?? null,
             'skip_reason' => $code,
+            'supplier_id' => $supplierId,
         ];
     }
 
@@ -637,16 +775,13 @@ class PiguOfferFeedExporter
             'inventory_policy' => null,
             'stock_source' => self::HOURS_SOURCE_SUPPLIER_ONLY,
             'skip_reason' => $code,
+            'supplier_id' => $supplier->id,
         ];
     }
 
-    /**
-     * @param  array<string, mixed>  $config
-     */
-    private function writeSkippedCsv(array $config): void
+    private function writeSkippedCsv(string $relative, string $diskName, PiguExportOptions $options): void
     {
-        $relative = (string) ($config['offers_failed_csv_path'] ?? self::FAILED_CSV_PATH);
-        $disk = Storage::disk('public');
+        $disk = Storage::disk($diskName);
         $disk->makeDirectory(dirname($relative));
 
         $handle = fopen($disk->path($relative), 'w');
@@ -668,9 +803,18 @@ class PiguOfferFeedExporter
             'inventory_policy',
             'stock_source',
             'skip_reason',
+            'supplier_id',
         ]);
 
-        foreach ($this->skippedRows as $row) {
+        $rows = $this->skippedRows;
+        if ($options->isPreview()) {
+            $rows = array_values(array_filter(
+                $rows,
+                fn (array $row): bool => (int) ($row['supplier_id'] ?? 0) === (int) $options->previewSupplierId,
+            ));
+        }
+
+        foreach ($rows as $row) {
             fputcsv($handle, [
                 $row['product_id'],
                 $row['variant_id'],
@@ -685,6 +829,7 @@ class PiguOfferFeedExporter
                 $row['inventory_policy'],
                 $row['stock_source'],
                 $row['skip_reason'],
+                $row['supplier_id'] ?? null,
             ]);
         }
 

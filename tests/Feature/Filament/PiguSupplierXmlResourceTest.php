@@ -4,10 +4,14 @@ namespace Tests\Feature\Filament;
 
 use App\Filament\Resources\PiguSupplierXml\Pages\CreatePiguSupplierXml;
 use App\Filament\Resources\PiguSupplierXml\Pages\ListPiguSupplierXml;
+use App\Filament\Resources\PiguSupplierXml\Pages\PreviewPiguSupplierOffers;
+use App\Filament\Resources\PiguSupplierXml\Pages\ViewPiguSupplierXml;
 use App\Models\Supplier;
+use App\Models\SupplierProduct;
 use App\Models\User;
 use App\Services\Marketplace\Pigu\PiguSupplierOfferConfig;
 use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Support\Facades\Storage;
 use Livewire\Livewire;
 use Tests\TestCase;
 
@@ -216,5 +220,97 @@ class PiguSupplierXmlResourceTest extends TestCase
             ])
             ->call('create')
             ->assertHasFormErrors(['config.xml_item_path']);
+    }
+
+    public function test_view_page_has_preview_pigu_xml_action(): void
+    {
+        Storage::fake('local');
+        Storage::fake('public');
+
+        $user = User::factory()->create();
+        $this->actingAs($user);
+
+        $supplier = Supplier::query()->create([
+            'name' => 'Preview Button Supplier',
+            'code' => 'preview_btn_xml',
+            'enabled' => true,
+            'connector_type' => Supplier::CONNECTOR_XML_URL,
+            'endpoint_url' => 'https://example.test/preview.xml',
+            'stock_priority' => 10,
+            'stale_after_minutes' => 2880,
+            'sync_enabled' => true,
+            'config' => [
+                'xml_item_path' => '//product',
+                'xml_sku_path' => 'sku',
+                'xml_barcode_path' => 'ean',
+                'xml_stock_path' => 'stock',
+                'xml_price_path' => 'price',
+                PiguSupplierOfferConfig::CONFIG_KEY => PiguSupplierOfferConfig::normalize([
+                    'enabled' => false,
+                    'export_supplier_only' => true,
+                    'collection_hours' => 240,
+                    'price_includes_vat' => false,
+                    'vat_rate' => 21,
+                ]),
+            ],
+        ]);
+
+        Livewire::test(ViewPiguSupplierXml::class, ['record' => $supplier->getRouteKey()])
+            ->assertSuccessful()
+            ->assertActionExists('previewPiguXml');
+    }
+
+    public function test_preview_page_generates_isolated_stats_without_enabling_supplier(): void
+    {
+        Storage::fake('local');
+        Storage::fake('public');
+
+        $user = User::factory()->create();
+        $this->actingAs($user);
+
+        $supplier = Supplier::query()->create([
+            'name' => 'Preview Page Supplier',
+            'code' => 'preview_page_xml',
+            'enabled' => true,
+            'connector_type' => Supplier::CONNECTOR_XML_URL,
+            'endpoint_url' => 'https://example.test/preview-page.xml',
+            'stock_priority' => 10,
+            'stale_after_minutes' => 2880,
+            'sync_enabled' => true,
+            'config' => [
+                'xml_item_path' => '//product',
+                'xml_sku_path' => 'sku',
+                'xml_barcode_path' => 'ean',
+                'xml_stock_path' => 'stock',
+                'xml_price_path' => 'price',
+                PiguSupplierOfferConfig::CONFIG_KEY => PiguSupplierOfferConfig::normalize([
+                    'enabled' => false,
+                    'export_supplier_only' => true,
+                    'collection_hours' => 240,
+                    'price_includes_vat' => false,
+                    'vat_rate' => 21,
+                ]),
+            ],
+        ]);
+
+        SupplierProduct::query()->create([
+            'supplier_id' => $supplier->id,
+            'supplier_sku' => 'PAGE-1',
+            'barcode' => '5901234567555',
+            'price' => 10.00,
+            'stock_quantity' => 2,
+            'match_status' => SupplierProduct::MATCH_STATUS_UNMATCHED,
+            'enabled' => true,
+            'last_synced_at' => now(),
+        ]);
+
+        Livewire::test(PreviewPiguSupplierOffers::class, ['record' => $supplier->getRouteKey()])
+            ->assertSuccessful()
+            ->assertSee('Galiojantys pasiūlymai')
+            ->assertSee('Atsisiųsti XML')
+            ->assertSee('Atsisiųsti atmestas prekes CSV');
+
+        $supplier->refresh();
+        $this->assertFalse(PiguSupplierOfferConfig::isEnabled($supplier));
     }
 }

@@ -25,6 +25,10 @@ class ViewPiguSupplierXml extends ViewRecord
     protected function getHeaderActions(): array
     {
         return [
+            Action::make('previewPiguXml')
+                ->label('Peržiūrėti Pigu XML')
+                ->icon(Heroicon::OutlinedEye)
+                ->url(fn (): string => PiguSupplierXmlResource::getUrl('preview', ['record' => $this->getRecord()])),
             EditAction::make()->label('Redaguoti'),
             Action::make('syncNow')
                 ->label('Sinchronizuoti dabar')

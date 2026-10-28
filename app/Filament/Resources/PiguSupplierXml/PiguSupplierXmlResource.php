@@ -5,6 +5,7 @@ namespace App\Filament\Resources\PiguSupplierXml;
 use App\Filament\Resources\PiguSupplierXml\Pages\CreatePiguSupplierXml;
 use App\Filament\Resources\PiguSupplierXml\Pages\EditPiguSupplierXml;
 use App\Filament\Resources\PiguSupplierXml\Pages\ListPiguSupplierXml;
+use App\Filament\Resources\PiguSupplierXml\Pages\PreviewPiguSupplierOffers;
 use App\Filament\Resources\PiguSupplierXml\Pages\ViewPiguSupplierXml;
 use App\Filament\Resources\PiguSupplierXml\Schemas\PiguSupplierXmlWizardSteps;
 use App\Filament\Resources\Suppliers\Actions\PreviewSupplierFeedAction;
@@ -168,6 +169,7 @@ class PiguSupplierXmlResource extends Resource
             'index' => ListPiguSupplierXml::route('/'),
             'create' => CreatePiguSupplierXml::route('/create'),
             'view' => ViewPiguSupplierXml::route('/{record}'),
+            'preview' => PreviewPiguSupplierOffers::route('/{record}/pigu-xml-preview'),
             'edit' => EditPiguSupplierXml::route('/{record}/edit'),
         ];
     }
