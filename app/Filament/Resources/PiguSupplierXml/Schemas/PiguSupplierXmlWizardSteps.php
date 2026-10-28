@@ -7,6 +7,7 @@ use App\Services\Marketplace\Pigu\PiguSupplierOfferStats;
 use App\Services\Marketplace\Pigu\PiguSupplierXmlFieldDetector;
 use App\Services\Suppliers\SupplierFormDataFactory;
 use App\Services\Suppliers\Xml\SupplierXmlFeedClient;
+use Filament\Forms\Components\Hidden;
 use Filament\Forms\Components\Placeholder;
 use Filament\Forms\Components\Select;
 use Filament\Forms\Components\TextInput;
@@ -127,64 +128,83 @@ class PiguSupplierXmlWizardSteps
             ->description('SKU, EAN, likutis, kaina')
             ->schema([
                 Section::make('Automatinis aptikimas')
-                    ->description('Sistema bandys atpažinti XML laukus. Jei nepavyks — pasirinkite rankiniu būdu.')
+                    ->description('Sistema atpažins pasikartojančius produktų blokus XML faile (pvz. entry, product, item, offer). Jei nepavyks — įveskite kelią rankiniu būdu.')
                     ->schema([
+                        Hidden::make('pigu_item_path_candidates')->dehydrated(false),
+                        Hidden::make('pigu_item_count')->dehydrated(false),
+                        Hidden::make('pigu_available_fields')->dehydrated(false),
+                        Hidden::make('pigu_preview_rows')->dehydrated(false),
                         Actions::make([
                             Action::make('autodetectFields')
                                 ->label('Aptikti laukus ir peržiūrėti XML')
                                 ->action(function (Get $get, Set $set) use ($getLivewire): void {
-                                    $url = trim((string) $get('endpoint_url'));
-                                    if ($url === '') {
-                                        Notification::make()->title('Įveskite XML adresą')->danger()->send();
-
-                                        return;
-                                    }
-
-                                    try {
-                                        $xml = app(SupplierXmlFeedClient::class)->fetch($url);
-                                        $detected = app(PiguSupplierXmlFieldDetector::class)->detect($xml);
-
-                                        $set('config.xml_item_path', $detected['item_path']);
-                                        $set('config.xml_sku_path', $detected['sku_path']);
-                                        $set('config.xml_barcode_path', $detected['barcode_path']);
-                                        $set('config.xml_stock_path', $detected['stock_path']);
-                                        $set('config.xml_price_path', $detected['price_path']);
-                                        $set('config.xml_title_path', $detected['title_path']);
-                                        $set('pigu_preview_rows', $detected['preview_rows']);
-                                        $set('pigu_available_fields', $detected['available_fields']);
-                                        $set('pigu_item_count', $detected['item_count']);
-
-                                        if ($getLivewire !== null) {
-                                            $livewire = $getLivewire();
-                                            if (is_object($livewire) && property_exists($livewire, 'piguPreviewRows')) {
-                                                $livewire->piguPreviewRows = $detected['preview_rows'];
-                                            }
-                                        }
-
-                                        Notification::make()
-                                            ->title('Aptikta '.$detected['item_count'].' produktų')
-                                            ->success()
-                                            ->send();
-                                    } catch (Throwable $exception) {
-                                        Notification::make()
-                                            ->title('Nepavyko nuskaityti XML')
-                                            ->body($exception->getMessage())
-                                            ->danger()
-                                            ->send();
-                                    }
+                                    self::runXmlDetection($get, $set, $getLivewire);
                                 }),
                         ]),
+                        Placeholder::make('pigu_item_path_candidates_display')
+                            ->label('Aptikti produktų blokai')
+                            ->content(fn (Get $get): HtmlString => self::candidatesHtml($get('pigu_item_path_candidates') ?? []))
+                            ->columnSpanFull(),
                         Placeholder::make('pigu_item_count_display')
-                            ->label('Produktų XML faile')
+                            ->label('Pasirinkto kelio produktų skaičius')
                             ->content(fn (Get $get): string => (string) ($get('pigu_item_count') ?? '—')),
                     ]),
                 Select::make('config.xml_item_path')
-                    ->label('Produktų kelias (item path)')
+                    ->label('Produktų kelias')
                     ->required()
                     ->searchable()
-                    ->options(fn (Get $get): array => self::pathOptions($get, [
-                        '//product', '//item', '//offer',
-                    ])),
+                    ->options(fn (Get $get): array => self::pathOptions($get))
+                    ->getOptionLabelUsing(fn (?string $value): ?string => filled($value) ? (string) $value : null)
+                    ->helperText('Pasirinkite iš aptiktų blokų. Jei sąraše nėra — įveskite kelią lauke žemiau.')
+                    ->live()
+                    ->afterStateUpdated(function (?string $state, Get $get, Set $set): void {
+                        self::refreshCountsForSelectedPath($state, $get, $set);
+                    })
+                    ->rules([
+                        fn (Get $get): \Closure => function (string $attribute, mixed $value, \Closure $fail) use ($get): void {
+                            $path = trim((string) $value);
+                            if ($path === '') {
+                                $fail('Pasirinkite arba įveskite produktų kelią.');
+
+                                return;
+                            }
+
+                            $count = $get('pigu_item_count');
+                            $candidates = $get('pigu_item_path_candidates') ?? [];
+                            if (! is_array($candidates) || $candidates === []) {
+                                return;
+                            }
+
+                            foreach ($candidates as $candidate) {
+                                if (! is_array($candidate) || ($candidate['path'] ?? null) !== $path) {
+                                    continue;
+                                }
+
+                                if ((int) ($candidate['count'] ?? 0) <= 0 || (is_numeric($count) && (int) $count <= 0)) {
+                                    $fail('Pasirinktas XML produktų kelias „'.$path.'“ nerado nė vieno produkto. Pasirinkite kitą kelią arba įveskite teisingą (pvz. //entry).');
+                                }
+
+                                return;
+                            }
+
+                            if (is_numeric($count) && (int) $count <= 0) {
+                                $fail('Pasirinktas XML produktų kelias „'.$path.'“ nerado nė vieno produkto. Pasirinkite kitą kelią arba įveskite teisingą (pvz. //entry).');
+                            }
+                        },
+                    ]),
+                TextInput::make('pigu_manual_item_path')
+                    ->label('Arba įveskite kelią rankiniu būdu')
+                    ->placeholder('pvz. //entry')
+                    ->datalist(fn (Get $get): array => array_keys(self::pathOptions($get)))
+                    ->helperText('Naudokite, jei automatinis sąrašas netinka. Po įvedimo paspauskite „Aptikti laukus…“ dar kartą.')
+                    ->live(onBlur: true)
+                    ->afterStateUpdated(function (?string $state, Set $set): void {
+                        $path = trim((string) $state);
+                        if ($path !== '') {
+                            $set('config.xml_item_path', $path);
+                        }
+                    })
+                    ->dehydrated(false),
                 Select::make('config.xml_sku_path')
                     ->label('SKU laukas')
                     ->required()
@@ -337,22 +357,156 @@ class PiguSupplierXmlWizardSteps
             ]);
     }
 
+    private static function runXmlDetection(Get $get, Set $set, ?callable $getLivewire): void
+    {
+        $url = trim((string) $get('endpoint_url'));
+        if ($url === '') {
+            Notification::make()->title('Įveskite XML adresą')->danger()->send();
+
+            return;
+        }
+
+        try {
+            $xml = app(SupplierXmlFeedClient::class)->fetch($url);
+            $detector = app(PiguSupplierXmlFieldDetector::class);
+            $preferredPath = trim((string) ($get('config.xml_item_path') ?? $get('pigu_manual_item_path') ?? ''));
+
+            $detected = $preferredPath !== ''
+                ? $detector->detectForItemPath($xml, $preferredPath)
+                : $detector->detect($xml);
+
+            if (($detected['item_count'] ?? 0) <= 0) {
+                $set('pigu_item_path_candidates', $detected['item_path_candidates'] ?? []);
+                $set('pigu_item_count', 0);
+                $set('pigu_preview_rows', []);
+                $set('pigu_available_fields', $detected['available_fields'] ?? []);
+
+                $pathLabel = $detected['item_path'] ?? $preferredPath ?: '—';
+                Notification::make()
+                    ->title('Produktų nerasta')
+                    ->body('Pasirinktas XML produktų kelias „'.$pathLabel.'“ nerado nė vieno produkto. Pasirinkite kitą kelią iš sąrašo arba įveskite teisingą (pvz. //entry).')
+                    ->danger()
+                    ->send();
+
+                return;
+            }
+
+            self::applyDetectionToForm($detected, $set, $getLivewire);
+
+            Notification::make()
+                ->title('Aptikta '.$detected['item_count'].' produktų')
+                ->body('Produktų kelias: '.($detected['item_path'] ?? '—'))
+                ->success()
+                ->send();
+        } catch (Throwable $exception) {
+            Notification::make()
+                ->title('Nepavyko nuskaityti XML')
+                ->body($exception->getMessage())
+                ->danger()
+                ->send();
+        }
+    }
+
     /**
-     * @param  array<int, string>  $extra
+     * @param  array<string, mixed>  $detected
+     */
+    private static function applyDetectionToForm(array $detected, Set $set, ?callable $getLivewire): void
+    {
+        $set('config.xml_item_path', $detected['item_path']);
+        $set('config.xml_sku_path', $detected['sku_path']);
+        $set('config.xml_barcode_path', $detected['barcode_path']);
+        $set('config.xml_stock_path', $detected['stock_path']);
+        $set('config.xml_price_path', $detected['price_path']);
+        $set('config.xml_title_path', $detected['title_path']);
+        $set('pigu_preview_rows', $detected['preview_rows']);
+        $set('pigu_available_fields', $detected['available_fields']);
+        $set('pigu_item_count', $detected['item_count']);
+        $set('pigu_item_path_candidates', $detected['item_path_candidates'] ?? []);
+        $set('pigu_manual_item_path', $detected['item_path']);
+
+        if ($getLivewire !== null) {
+            $livewire = $getLivewire();
+            if (is_object($livewire) && property_exists($livewire, 'piguPreviewRows')) {
+                $livewire->piguPreviewRows = $detected['preview_rows'];
+            }
+        }
+    }
+
+    private static function refreshCountsForSelectedPath(?string $state, Get $get, Set $set): void
+    {
+        $path = trim((string) $state);
+        if ($path === '') {
+            return;
+        }
+
+        $candidates = $get('pigu_item_path_candidates') ?? [];
+        if (! is_array($candidates)) {
+            return;
+        }
+
+        foreach ($candidates as $candidate) {
+            if (! is_array($candidate) || ($candidate['path'] ?? null) !== $path) {
+                continue;
+            }
+
+            $set('pigu_item_count', (int) ($candidate['count'] ?? 0));
+            $set('pigu_manual_item_path', $path);
+
+            return;
+        }
+    }
+
+    /**
      * @return array<string, string>
      */
-    private static function pathOptions(Get $get, array $extra = []): array
+    private static function pathOptions(Get $get): array
     {
-        $current = $get('config.xml_item_path');
         $options = [];
-        foreach ($extra as $path) {
-            $options[$path] = $path;
+        $candidates = $get('pigu_item_path_candidates') ?? [];
+
+        if (is_array($candidates)) {
+            foreach ($candidates as $candidate) {
+                if (! is_array($candidate)) {
+                    continue;
+                }
+                $path = (string) ($candidate['path'] ?? '');
+                if ($path === '') {
+                    continue;
+                }
+                $label = (string) ($candidate['label'] ?? $path);
+                $options[$path] = $label;
+            }
         }
-        if (filled($current)) {
+
+        $current = $get('config.xml_item_path');
+        if (filled($current) && ! isset($options[(string) $current])) {
             $options[(string) $current] = (string) $current;
         }
 
         return $options;
+    }
+
+    /**
+     * @param  mixed  $candidates
+     */
+    private static function candidatesHtml(mixed $candidates): HtmlString
+    {
+        if (! is_array($candidates) || $candidates === []) {
+            return new HtmlString('<p class="text-sm text-gray-500">Paspauskite „Aptikti laukus…“, kad sistema surastų produktų blokus (pvz. entry, product).</p>');
+        }
+
+        $html = '<ul style="margin:0;padding-left:1.1rem;line-height:1.7">';
+        foreach ($candidates as $candidate) {
+            if (! is_array($candidate)) {
+                continue;
+            }
+            $label = e((string) ($candidate['label'] ?? $candidate['path'] ?? ''));
+            $path = e((string) ($candidate['path'] ?? ''));
+            $html .= '<li><strong>'.$label.'</strong> <span class="text-gray-500">('.$path.')</span></li>';
+        }
+        $html .= '</ul>';
+
+        return new HtmlString($html);
     }
 
     /**

@@ -51,10 +51,21 @@ class SupplierXmlParser
             $xpath->registerNamespace($prefix, $uri);
         }
 
-        $items = $xpath->query($itemPath);
+        $previousXpathErrors = libxml_use_internal_errors(true);
+        $items = @$xpath->query($itemPath);
+        libxml_clear_errors();
+        libxml_use_internal_errors($previousXpathErrors);
 
-        if ($items === false || $items->length === 0) {
-            throw new RuntimeException('XML feed did not contain any items for path: '.$itemPath);
+        if ($items === false) {
+            throw new RuntimeException(
+                'XML produktų kelias „'.$itemPath.'“ yra neteisingas. Patikrinkite kelią (pvz. //entry, //product) ir bandykite dar kartą.',
+            );
+        }
+
+        if ($items->length === 0) {
+            throw new RuntimeException(
+                'Pasirinktas XML produktų kelias „'.$itemPath.'“ nerado nė vieno produkto. Pasirinkite kitą kelią (pvz. //entry) arba įveskite teisingą XPath.',
+            );
         }
 
         $entries = [];

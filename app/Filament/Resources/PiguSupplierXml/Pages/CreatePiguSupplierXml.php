@@ -61,6 +61,8 @@ class CreatePiguSupplierXml extends CreateRecord
             $data['pigu_preview_rows'],
             $data['pigu_available_fields'],
             $data['pigu_item_count'],
+            $data['pigu_item_path_candidates'],
+            $data['pigu_manual_item_path'],
         );
 
         return $data;

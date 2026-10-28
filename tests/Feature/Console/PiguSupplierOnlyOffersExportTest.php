@@ -286,6 +286,29 @@ XML;
         $this->assertSame('price', $detected['price_path']);
         $this->assertSame(2, $detected['item_count']);
         $this->assertCount(2, $detected['preview_rows']);
+        $this->assertNotEmpty($detected['item_path_candidates']);
+    }
+
+    public function test_field_detector_autodetects_entry_paths(): void
+    {
+        $xml = <<<'XML'
+<?xml version="1.0" encoding="UTF-8"?>
+<feed>
+  <entry>
+    <sku>E1</sku>
+    <ean>5901234567888</ean>
+    <stock>2</stock>
+    <price>8.00</price>
+    <title>Entry one</title>
+  </entry>
+</feed>
+XML;
+
+        $detected = app(PiguSupplierXmlFieldDetector::class)->detect($xml);
+
+        $this->assertSame('//entry', $detected['item_path']);
+        $this->assertSame(1, $detected['item_count']);
+        $this->assertContains('//entry', array_column($detected['item_path_candidates'], 'path'));
     }
 
     public function test_public_offers_route_serves_generated_feed(): void
