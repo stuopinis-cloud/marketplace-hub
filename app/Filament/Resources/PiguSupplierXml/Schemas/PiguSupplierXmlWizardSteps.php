@@ -211,16 +211,24 @@ class PiguSupplierXmlWizardSteps
                     ->label('SKU laukas')
                     ->required()
                     ->searchable()
+                    ->live()
                     ->options(fn (Get $get): array => self::fieldOptions($get))
                     ->getOptionLabelUsing(fn (?string $value): ?string => filled($value) ? (string) $value : null)
-                    ->helperText('Google Merchant: paprastai g:id'),
+                    ->helperText('Google Merchant: rinkitės g:SKU (ne g:id — tai vidinis produkto ID).')
+                    ->afterStateUpdated(function (Get $get, Set $set) use ($getLivewire): void {
+                        self::refreshPreviewForCurrentMappings($get, $set, $getLivewire);
+                    }),
                 Select::make('config.xml_barcode_path')
                     ->label('EAN / barkodas')
                     ->required()
                     ->searchable()
+                    ->live()
                     ->options(fn (Get $get): array => self::fieldOptions($get))
                     ->getOptionLabelUsing(fn (?string $value): ?string => filled($value) ? (string) $value : null)
-                    ->helperText('Google Merchant: paprastai g:gtin'),
+                    ->helperText('Google Merchant: paprastai g:gtin')
+                    ->afterStateUpdated(function (Get $get, Set $set) use ($getLivewire): void {
+                        self::refreshPreviewForCurrentMappings($get, $set, $getLivewire);
+                    }),
                 Select::make('config.xml_stock_path')
                     ->label('Likutis / prieinamumas')
                     ->required()
@@ -229,33 +237,46 @@ class PiguSupplierXmlWizardSteps
                     ->getOptionLabelUsing(fn (?string $value): ?string => filled($value) ? (string) $value : null)
                     ->helperText('Jei XML turi tik „in stock / out of stock“ (pvz. g:availability) — pasirinkite tą lauką. Skaitinis kiekis nebus išgalvotas.')
                     ->live()
-                    ->afterStateUpdated(function (?string $state, Set $set): void {
+                    ->afterStateUpdated(function (?string $state, Get $get, Set $set) use ($getLivewire): void {
                         $local = str_contains((string) $state, ':')
                             ? (string) explode(':', (string) $state, 2)[1]
                             : (string) $state;
-                        if (strcasecmp($local, 'availability') === 0) {
+                        if ($local === 'availability') {
                             $set('config.xml_availability_path', $state);
                         }
+                        self::refreshPreviewForCurrentMappings($get, $set, $getLivewire);
                     }),
                 Select::make('config.xml_availability_path')
                     ->label('Prieinamumo laukas (neprivaloma)')
                     ->searchable()
+                    ->live()
                     ->options(fn (Get $get): array => self::fieldOptions($get))
                     ->getOptionLabelUsing(fn (?string $value): ?string => filled($value) ? (string) $value : null)
-                    ->helperText('Jei likutis ir prieinamumas atskiri — čia pasirinkite g:availability.'),
+                    ->helperText('Jei likutis ir prieinamumas atskiri — čia pasirinkite g:availability.')
+                    ->afterStateUpdated(function (Get $get, Set $set) use ($getLivewire): void {
+                        self::refreshPreviewForCurrentMappings($get, $set, $getLivewire);
+                    }),
                 Select::make('config.xml_price_path')
                     ->label('Rekomenduojama mažmeninė kaina')
                     ->required()
                     ->searchable()
+                    ->live()
                     ->options(fn (Get $get): array => self::fieldOptions($get))
                     ->getOptionLabelUsing(fn (?string $value): ?string => filled($value) ? (string) $value : null)
-                    ->helperText('Google Merchant: g:price (pvz. „32.71 EUR“)'),
+                    ->helperText('Google Merchant: g:price (pvz. „32.71 EUR“)')
+                    ->afterStateUpdated(function (Get $get, Set $set) use ($getLivewire): void {
+                        self::refreshPreviewForCurrentMappings($get, $set, $getLivewire);
+                    }),
                 Select::make('config.xml_title_path')
                     ->label('Produkto pavadinimas (neprivaloma)')
                     ->searchable()
+                    ->live()
                     ->options(fn (Get $get): array => self::fieldOptions($get))
                     ->getOptionLabelUsing(fn (?string $value): ?string => filled($value) ? (string) $value : null)
-                    ->helperText('Google Merchant: g:title'),
+                    ->helperText('Google Merchant: g:title')
+                    ->afterStateUpdated(function (Get $get, Set $set) use ($getLivewire): void {
+                        self::refreshPreviewForCurrentMappings($get, $set, $getLivewire);
+                    }),
                 Placeholder::make('preview_table')
                     ->label('Peržiūra (iki 10 produktų)')
                     ->content(fn (Get $get): HtmlString => self::previewTableHtml($get('pigu_preview_rows') ?? []))
@@ -424,11 +445,13 @@ class PiguSupplierXmlWizardSteps
                 return;
             }
 
-            self::applyDetectionToForm($detected, $set, $getLivewire);
+            self::applyDetectionToForm($detected, $set, $getLivewire, $get, overwriteMappings: $preferredPath === '');
 
             Notification::make()
                 ->title('Aptikta '.$detected['item_count'].' produktų')
-                ->body('Produktų kelias: '.($detected['item_path'] ?? '—'))
+                ->body('Produktų kelias: '.($detected['item_path'] ?? '—')
+                    .'. SKU laukas: '.($get('config.xml_sku_path') ?: ($detected['sku_path'] ?? '—'))
+                    .' (g:id rodomas atskirai peržiūroje — tai ne SKU).')
                 ->success()
                 ->send();
         } catch (Throwable $exception) {
@@ -443,27 +466,119 @@ class PiguSupplierXmlWizardSteps
     /**
      * @param  array<string, mixed>  $detected
      */
-    private static function applyDetectionToForm(array $detected, Set $set, ?callable $getLivewire): void
-    {
+    private static function applyDetectionToForm(
+        array $detected,
+        Set $set,
+        ?callable $getLivewire,
+        ?Get $get = null,
+        bool $overwriteMappings = true,
+    ): void {
         $set('config.xml_item_path', $detected['item_path']);
-        $set('config.xml_sku_path', $detected['sku_path']);
-        $set('config.xml_barcode_path', $detected['barcode_path']);
-        $set('config.xml_stock_path', $detected['stock_path']);
-        $set('config.xml_availability_path', $detected['availability_path'] ?? null);
-        $set('config.xml_price_path', $detected['price_path']);
-        $set('config.xml_title_path', $detected['title_path']);
         $set('config.xml_namespaces', $detected['namespaces'] ?? []);
-        $set('pigu_preview_rows', $detected['preview_rows']);
         $set('pigu_available_fields', $detected['available_fields']);
         $set('pigu_item_count', $detected['item_count']);
         $set('pigu_item_path_candidates', $detected['item_path_candidates'] ?? []);
         $set('pigu_manual_item_path', $detected['item_path']);
 
+        $available = is_array($detected['available_fields'] ?? null) ? $detected['available_fields'] : [];
+
+        $mappingKeys = [
+            'config.xml_sku_path' => 'sku_path',
+            'config.xml_barcode_path' => 'barcode_path',
+            'config.xml_stock_path' => 'stock_path',
+            'config.xml_availability_path' => 'availability_path',
+            'config.xml_price_path' => 'price_path',
+            'config.xml_title_path' => 'title_path',
+        ];
+
+        $resolvedMappings = [
+            'sku_path' => null,
+            'barcode_path' => null,
+            'stock_path' => null,
+            'price_path' => null,
+            'title_path' => null,
+        ];
+
+        foreach ($mappingKeys as $formKey => $detectedKey) {
+            $current = $get instanceof Get ? $get($formKey) : null;
+            $suggested = $detected[$detectedKey] ?? null;
+
+            if (! $overwriteMappings && filled($current) && in_array($current, $available, true)) {
+                $value = $current;
+            } else {
+                $value = $suggested;
+                $set($formKey, $suggested);
+            }
+
+            if (array_key_exists($detectedKey, $resolvedMappings)) {
+                $resolvedMappings[$detectedKey] = $value;
+            }
+        }
+
+        $previewRows = $detected['preview_rows'] ?? [];
+        $url = $get instanceof Get ? trim((string) $get('endpoint_url')) : '';
+        $itemPath = (string) ($detected['item_path'] ?? '');
+        if ($url !== '' && $itemPath !== '') {
+            try {
+                $xml = app(SupplierXmlFeedClient::class)->fetch($url);
+                $preview = app(PiguSupplierXmlFieldDetector::class)->previewWithMappings(
+                    $xml,
+                    $itemPath,
+                    $resolvedMappings,
+                    is_array($detected['item_path_candidates'] ?? null) ? $detected['item_path_candidates'] : [],
+                );
+                $previewRows = $preview['preview_rows'] ?? $previewRows;
+            } catch (Throwable) {
+                // Keep autodetection preview rows.
+            }
+        }
+
+        $set('pigu_preview_rows', $previewRows);
+
         if ($getLivewire !== null) {
             $livewire = $getLivewire();
             if (is_object($livewire) && property_exists($livewire, 'piguPreviewRows')) {
-                $livewire->piguPreviewRows = $detected['preview_rows'];
+                $livewire->piguPreviewRows = $previewRows;
             }
+        }
+    }
+
+    private static function refreshPreviewForCurrentMappings(Get $get, Set $set, ?callable $getLivewire): void
+    {
+        $url = trim((string) $get('endpoint_url'));
+        $itemPath = trim((string) ($get('config.xml_item_path') ?? ''));
+        if ($url === '' || $itemPath === '') {
+            return;
+        }
+
+        try {
+            $xml = app(SupplierXmlFeedClient::class)->fetch($url);
+            $candidates = $get('pigu_item_path_candidates') ?? [];
+            $preview = app(PiguSupplierXmlFieldDetector::class)->previewWithMappings(
+                $xml,
+                $itemPath,
+                [
+                    'sku_path' => $get('config.xml_sku_path'),
+                    'barcode_path' => $get('config.xml_barcode_path'),
+                    'stock_path' => $get('config.xml_stock_path'),
+                    'price_path' => $get('config.xml_price_path'),
+                    'title_path' => $get('config.xml_title_path'),
+                ],
+                is_array($candidates) ? $candidates : [],
+            );
+
+            $set('pigu_preview_rows', $preview['preview_rows'] ?? []);
+            $set('pigu_available_fields', $preview['available_fields'] ?? $get('pigu_available_fields'));
+            $set('pigu_item_count', $preview['item_count'] ?? $get('pigu_item_count'));
+
+            if ($getLivewire !== null) {
+                $livewire = $getLivewire();
+                if (is_object($livewire) && property_exists($livewire, 'piguPreviewRows')) {
+                    $livewire->piguPreviewRows = $preview['preview_rows'] ?? [];
+                }
+            }
+        } catch (Throwable) {
+            // Keep previous preview if refresh fails.
         }
     }
 
@@ -520,7 +635,8 @@ class PiguSupplierXmlWizardSteps
                 return;
             }
 
-            self::applyDetectionToForm($detected, $set, $getLivewire);
+            self::applyDetectionToForm($detected, $set, $getLivewire, $get, overwriteMappings: false);
+            self::refreshPreviewForCurrentMappings($get, $set, $getLivewire);
         } catch (Throwable) {
             // Keep previous mappings if refresh fetch fails; admin can re-run detection.
         }
@@ -617,12 +733,13 @@ class PiguSupplierXmlWizardSteps
     private static function previewTableHtml(mixed $rows): HtmlString
     {
         if (! is_array($rows) || $rows === []) {
-            return new HtmlString('<p class="text-sm text-gray-500">Paspauskite „Aptikti laukus…“, kad pamatytumėte produktus.</p>');
+            return new HtmlString('<p class="text-sm text-gray-500">Paspauskite „Aptikti laukus…“, kad pamatytumėte produktus. Pakeitus SKU lauką peržiūra atsinaujina automatiškai.</p>');
         }
 
         $html = '<div style="overflow-x:auto"><table style="width:100%;border-collapse:collapse;font-size:13px">';
         $html .= '<thead><tr>'
-            .'<th style="text-align:left;border-bottom:1px solid #ddd;padding:6px">SKU</th>'
+            .'<th style="text-align:left;border-bottom:1px solid #ddd;padding:6px">g:id (vidinis)</th>'
+            .'<th style="text-align:left;border-bottom:1px solid #ddd;padding:6px">Tiekėjo SKU</th>'
             .'<th style="text-align:left;border-bottom:1px solid #ddd;padding:6px">EAN</th>'
             .'<th style="text-align:left;border-bottom:1px solid #ddd;padding:6px">Likutis</th>'
             .'<th style="text-align:left;border-bottom:1px solid #ddd;padding:6px">Kaina</th>'
@@ -634,7 +751,8 @@ class PiguSupplierXmlWizardSteps
                 continue;
             }
             $html .= '<tr>'
-                .'<td style="padding:6px;border-bottom:1px solid #eee">'.e((string) ($row['sku'] ?? '')).'</td>'
+                .'<td style="padding:6px;border-bottom:1px solid #eee;color:#6b7280">'.e((string) ($row['merchant_id'] ?? '')).'</td>'
+                .'<td style="padding:6px;border-bottom:1px solid #eee;font-weight:600">'.e((string) ($row['sku'] ?? '')).'</td>'
                 .'<td style="padding:6px;border-bottom:1px solid #eee">'.e((string) ($row['ean'] ?? '')).'</td>'
                 .'<td style="padding:6px;border-bottom:1px solid #eee">'.e((string) ($row['stock'] ?? '')).'</td>'
                 .'<td style="padding:6px;border-bottom:1px solid #eee">'.e((string) ($row['price'] ?? '')).'</td>'
@@ -642,7 +760,8 @@ class PiguSupplierXmlWizardSteps
                 .'</tr>';
         }
 
-        $html .= '</tbody></table></div>';
+        $html .= '</tbody></table></div>'
+            .'<p class="text-sm text-gray-500 mt-2">„g:id“ yra vidinis Merchant ID. Eksportui ir sinchronizacijai naudojamas stulpelis „Tiekėjo SKU“ pagal pasirinktą lauką (pvz. g:SKU).</p>';
 
         return new HtmlString($html);
     }

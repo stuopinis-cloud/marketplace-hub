@@ -7,12 +7,14 @@ use App\Filament\Resources\PiguSupplierXml\Schemas\PiguSupplierXmlWizardSteps;
 use App\Filament\Resources\Suppliers\Concerns\MutatesSupplierFormData;
 use App\Models\Supplier;
 use App\Services\Marketplace\Pigu\PiguSupplierOfferConfig;
+use App\Services\Suppliers\Xml\SupplierSkuReconciliationService;
 use App\Services\Sync\MarketplaceJobDispatcher;
 use Filament\Actions\Action;
 use Filament\Notifications\Notification;
 use Filament\Resources\Pages\EditRecord;
 use Filament\Resources\Pages\EditRecord\Concerns\HasWizard;
 use Filament\Support\Icons\Heroicon;
+use Throwable;
 
 class EditPiguSupplierXml extends EditRecord
 {
@@ -50,6 +52,35 @@ class EditPiguSupplierXml extends EditRecord
                         ->body($result->message)
                         ->{$result->alreadyRunning ? 'warning' : 'success'}()
                         ->send();
+                }),
+            Action::make('reconcileSkusDryRun')
+                ->label('SKU sutvarkymo peržiūra')
+                ->icon(Heroicon::OutlinedListBullet)
+                ->color('gray')
+                ->action(function (SupplierSkuReconciliationService $reconciliation): void {
+                    /** @var Supplier $record */
+                    $record = $this->getRecord();
+                    try {
+                        $report = $reconciliation->reconcile($record, dryRun: true);
+                        Notification::make()
+                            ->title('SKU dry-run ataskaita')
+                            ->body(sprintf(
+                                'Pervadinimai: %d · Konfliktai: %d · Jau teisingi: %d. Paleiskite `php artisan supplier:reconcile-skus %s --apply` po peržiūros.',
+                                count($report['rename']),
+                                count($report['conflicts']),
+                                $report['already_correct'],
+                                $record->code,
+                            ))
+                            ->success()
+                            ->persistent()
+                            ->send();
+                    } catch (Throwable $exception) {
+                        Notification::make()
+                            ->title('SKU sutvarkymas nepavyko')
+                            ->body($exception->getMessage())
+                            ->danger()
+                            ->send();
+                    }
                 }),
         ];
     }

@@ -136,12 +136,12 @@ class PiguSupplierXmlResourceTest extends TestCase
                     ['path' => '//*[local-name()="entry"]', 'count' => 9150, 'label' => 'entry — 9150 produktų'],
                 ],
                 'pigu_item_count' => 9150,
-                'pigu_available_fields' => ['g:id', 'g:gtin', 'g:availability', 'g:price', 'g:title'],
+                'pigu_available_fields' => ['g:id', 'g:SKU', 'g:gtin', 'g:stock', 'g:availability', 'g:price', 'g:title'],
                 'config' => [
                     'xml_item_path' => '//*[local-name()="entry"]',
-                    'xml_sku_path' => 'g:id',
+                    'xml_sku_path' => 'g:SKU',
                     'xml_barcode_path' => 'g:gtin',
-                    'xml_stock_path' => 'g:availability',
+                    'xml_stock_path' => 'g:stock',
                     'xml_availability_path' => 'g:availability',
                     'xml_price_path' => 'g:price',
                     'xml_title_path' => 'g:title',
@@ -167,9 +167,10 @@ class PiguSupplierXmlResourceTest extends TestCase
         $supplier = Supplier::query()->where('code', 'mtac_google_map')->first();
 
         $this->assertNotNull($supplier);
-        $this->assertSame('g:id', $supplier->config['xml_sku_path'] ?? null);
+        $this->assertSame('g:SKU', $supplier->config['xml_sku_path'] ?? null);
+        $this->assertNotSame('g:id', $supplier->config['xml_sku_path'] ?? null);
         $this->assertSame('g:gtin', $supplier->config['xml_barcode_path'] ?? null);
-        $this->assertSame('g:availability', $supplier->config['xml_stock_path'] ?? null);
+        $this->assertSame('g:stock', $supplier->config['xml_stock_path'] ?? null);
         $this->assertSame('g:price', $supplier->config['xml_price_path'] ?? null);
         $this->assertSame('g:title', $supplier->config['xml_title_path'] ?? null);
         $this->assertSame(5, $supplier->availability_fallback_quantity);

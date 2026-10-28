@@ -2,6 +2,7 @@
 
 namespace App\Services\Marketplace\Pigu;
 
+use App\Services\Suppliers\Xml\SupplierXmlFieldValueResolver;
 use DOMDocument;
 use DOMElement;
 use DOMNode;
@@ -13,6 +14,10 @@ use DOMXPath;
  */
 class PiguSupplierXmlFieldDetector
 {
+    public function __construct(
+        private readonly SupplierXmlFieldValueResolver $fieldResolver = new SupplierXmlFieldValueResolver,
+    ) {}
+
     /**
      * @var array<int, string>
      */
@@ -222,8 +227,10 @@ class PiguSupplierXmlFieldDetector
             ? $this->collectChildFieldNames($first)
             : [];
 
+        // Prefer real supplier SKU fields. Never auto-suggest g:id as SKU — that is a merchant internal ID.
         $skuPath = $this->pickField($fields, [
-            'g:id', 'id', 'sku', 'product_sku', 'productsku', 'code', 'product_code', 'supplier_sku', 'mpn', 'g:sku', 'SKU',
+            'g:SKU', 'SKU', 'g:sku', 'sku', 'product_sku', 'productsku', 'code', 'product_code',
+            'supplier_sku', 'mpn', 'g:mpn',
         ]);
         $barcodePath = $this->pickField($fields, [
             'g:gtin', 'gtin', 'ean', 'barcode', 'bar_code', 'upc', 'isbn', 'g:ean',
@@ -243,23 +250,13 @@ class PiguSupplierXmlFieldDetector
             'g:title', 'title', 'name', 'product_name', 'product_title', 'description',
         ]);
 
-        $previewRows = [];
-        $limit = min(10, $items->length);
-
-        for ($i = 0; $i < $limit; $i++) {
-            $item = $items->item($i);
-            if (! $item instanceof DOMNode) {
-                continue;
-            }
-
-            $previewRows[] = [
-                'sku' => $skuPath !== null ? $this->childValue($xpath, $item, $skuPath) : null,
-                'ean' => $barcodePath !== null ? $this->childValue($xpath, $item, $barcodePath) : null,
-                'stock' => $stockPath !== null ? $this->childValue($xpath, $item, $stockPath) : null,
-                'price' => $pricePath !== null ? $this->childValue($xpath, $item, $pricePath) : null,
-                'title' => $titlePath !== null ? $this->childValue($xpath, $item, $titlePath) : null,
-            ];
-        }
+        $previewRows = $this->buildPreviewRows($xpath, $items, [
+            'sku_path' => $skuPath,
+            'barcode_path' => $barcodePath,
+            'stock_path' => $stockPath,
+            'price_path' => $pricePath,
+            'title_path' => $titlePath,
+        ]);
 
         return [
             'item_path' => $itemPath,
@@ -275,6 +272,115 @@ class PiguSupplierXmlFieldDetector
             'preview_rows' => $previewRows,
             'item_count' => $items->length,
         ];
+    }
+
+    /**
+     * Rebuild preview rows using explicitly selected field mappings (not autodetection defaults).
+     *
+     * @param  array{
+     *     sku_path?: ?string,
+     *     barcode_path?: ?string,
+     *     stock_path?: ?string,
+     *     price_path?: ?string,
+     *     title_path?: ?string
+     * }  $mappings
+     * @return array{
+     *     item_path: ?string,
+     *     item_path_candidates: array<int, array{path: string, count: int, label: string}>,
+     *     sku_path: ?string,
+     *     barcode_path: ?string,
+     *     stock_path: ?string,
+     *     availability_path: ?string,
+     *     price_path: ?string,
+     *     title_path: ?string,
+     *     available_fields: array<int, string>,
+     *     namespaces: array<string, string>,
+     *     preview_rows: array<int, array<string, string|null>>,
+     *     item_count: int
+     * }
+     */
+    public function previewWithMappings(string $xml, string $itemPath, array $mappings, array $candidates = []): array
+    {
+        $base = $this->detectForItemPath($xml, $itemPath, $candidates);
+
+        [$document, $xpath] = $this->loadDocument($xml);
+        if ($document === null || $xpath === null) {
+            return $base;
+        }
+
+        $items = @$xpath->query($itemPath);
+        if ($items === false || $items->length === 0) {
+            return $base;
+        }
+
+        $skuPath = $mappings['sku_path'] ?? $base['sku_path'];
+        $barcodePath = $mappings['barcode_path'] ?? $base['barcode_path'];
+        $stockPath = $mappings['stock_path'] ?? $base['stock_path'];
+        $pricePath = $mappings['price_path'] ?? $base['price_path'];
+        $titlePath = $mappings['title_path'] ?? $base['title_path'];
+
+        $base['sku_path'] = $skuPath;
+        $base['barcode_path'] = $barcodePath;
+        $base['stock_path'] = $stockPath;
+        $base['price_path'] = $pricePath;
+        $base['title_path'] = $titlePath;
+        $base['preview_rows'] = $this->buildPreviewRows($xpath, $items, [
+            'sku_path' => $skuPath,
+            'barcode_path' => $barcodePath,
+            'stock_path' => $stockPath,
+            'price_path' => $pricePath,
+            'title_path' => $titlePath,
+        ]);
+
+        return $base;
+    }
+
+    /**
+     * @param  \DOMNodeList  $items
+     * @param  array{
+     *     sku_path: ?string,
+     *     barcode_path: ?string,
+     *     stock_path: ?string,
+     *     price_path: ?string,
+     *     title_path: ?string
+     * }  $paths
+     * @return array<int, array<string, string|null>>
+     */
+    private function buildPreviewRows(DOMXPath $xpath, \DOMNodeList $items, array $paths): array
+    {
+        $previewRows = [];
+        $limit = min(10, $items->length);
+
+        for ($i = 0; $i < $limit; $i++) {
+            $item = $items->item($i);
+            if (! $item instanceof DOMNode) {
+                continue;
+            }
+
+            $merchantId = $this->fieldResolver->valueAt($xpath, 'g:id', $item)
+                ?? $this->fieldResolver->valueAt($xpath, 'id', $item);
+
+            $previewRows[] = [
+                'merchant_id' => $merchantId,
+                'sku' => filled($paths['sku_path'] ?? null)
+                    ? $this->fieldResolver->valueAt($xpath, (string) $paths['sku_path'], $item)
+                    : null,
+                'ean' => filled($paths['barcode_path'] ?? null)
+                    ? $this->fieldResolver->valueAt($xpath, (string) $paths['barcode_path'], $item)
+                    : null,
+                'stock' => filled($paths['stock_path'] ?? null)
+                    ? $this->fieldResolver->valueAt($xpath, (string) $paths['stock_path'], $item)
+                    : null,
+                'price' => filled($paths['price_path'] ?? null)
+                    ? $this->fieldResolver->valueAt($xpath, (string) $paths['price_path'], $item)
+                    : null,
+                'title' => filled($paths['title_path'] ?? null)
+                    ? $this->fieldResolver->valueAt($xpath, (string) $paths['title_path'], $item)
+                    : null,
+            ];
+        }
+
+        return $previewRows;
     }
 
     /**
@@ -586,6 +692,8 @@ class PiguSupplierXmlFieldDetector
     }
 
     /**
+     * Case-sensitive field pick. "g:SKU" will not match "g:sku" or "g:id".
+     *
      * @param  array<int, string>  $fields
      * @param  array<int, string>  $candidates
      */
@@ -593,66 +701,12 @@ class PiguSupplierXmlFieldDetector
     {
         foreach ($candidates as $candidate) {
             foreach ($fields as $field) {
-                if (strcasecmp($field, $candidate) === 0) {
+                if ($field === $candidate) {
                     return $field;
                 }
             }
         }
 
-        $matches = [];
-        foreach ($candidates as $candidate) {
-            $candidateLocal = $this->fieldLocalName($candidate);
-            foreach ($fields as $field) {
-                if (strcasecmp($this->fieldLocalName($field), $candidateLocal) === 0) {
-                    $matches[] = $field;
-                }
-            }
-            if ($matches !== []) {
-                break;
-            }
-        }
-
-        if ($matches === []) {
-            return null;
-        }
-
-        foreach ($matches as $match) {
-            if (str_starts_with($match, 'g:')) {
-                return $match;
-            }
-        }
-
-        return $matches[0];
-    }
-
-    private function childValue(DOMXPath $xpath, DOMNode $item, string $field): ?string
-    {
-        foreach ($this->fieldQueryCandidates($field) as $query) {
-            $nodes = @$xpath->query($query, $item);
-            if ($nodes === false || $nodes->length === 0) {
-                continue;
-            }
-
-            $value = trim((string) $nodes->item(0)?->textContent);
-            if ($value !== '') {
-                return $value;
-            }
-        }
-
         return null;
-    }
-
-    /**
-     * @return array<int, string>
-     */
-    private function fieldQueryCandidates(string $field): array
-    {
-        $local = $this->fieldLocalName($field);
-
-        return array_values(array_unique([
-            $field,
-            '*[local-name()="'.$local.'"]',
-            './/*[local-name()="'.$local.'"]',
-        ]));
     }
 }

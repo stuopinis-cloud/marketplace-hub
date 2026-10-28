@@ -15,7 +15,8 @@ class SupplierXmlGoogleMerchantParserTest extends TestCase
         $parsed = (new SupplierXmlParser)->parse($this->sampleFeed(), $supplier);
 
         $this->assertCount(3, $parsed['entries']);
-        $this->assertSame('MT-100', $parsed['entries'][0]['sku']);
+        $this->assertSame('3-121-MT-100', $parsed['entries'][0]['sku']);
+        $this->assertSame('MT-100', $parsed['entries'][0]['raw_payload']['merchant_id']);
         $this->assertSame('5901234567001', $parsed['entries'][0]['barcode']);
         $this->assertSame('Knife', $parsed['entries'][0]['title']);
         $this->assertSame(32.71, $parsed['entries'][0]['price']);
@@ -29,7 +30,7 @@ class SupplierXmlGoogleMerchantParserTest extends TestCase
         $supplier = $this->merchantSupplier();
         $parsed = (new SupplierXmlParser)->parse($this->sampleFeed(), $supplier);
 
-        $this->assertSame('MT-200', $parsed['entries'][1]['sku']);
+        $this->assertSame('3-121-MT-200', $parsed['entries'][1]['sku']);
         $this->assertSame(0, $parsed['entries'][1]['stock_quantity']);
         $this->assertSame(SupplierProduct::AVAILABILITY_UNAVAILABLE, $parsed['entries'][1]['availability_status']);
     }
@@ -39,7 +40,7 @@ class SupplierXmlGoogleMerchantParserTest extends TestCase
         $supplier = $this->merchantSupplier();
         $parsed = (new SupplierXmlParser)->parse($this->sampleFeed(), $supplier);
 
-        $this->assertSame('MT-300', $parsed['entries'][2]['sku']);
+        $this->assertSame('3-121-MT-300', $parsed['entries'][2]['sku']);
         $this->assertSame(0, $parsed['entries'][2]['stock_quantity']);
         $this->assertSame(SupplierProduct::AVAILABILITY_UNAVAILABLE, $parsed['entries'][2]['availability_status']);
     }
@@ -85,7 +86,7 @@ class SupplierXmlGoogleMerchantParserTest extends TestCase
             'availability_fallback_quantity' => 5,
             'config' => [
                 'xml_item_path' => '//*[local-name()="entry"]',
-                'xml_sku_path' => 'g:id',
+                'xml_sku_path' => 'g:SKU',
                 'xml_barcode_path' => 'g:gtin',
                 'xml_stock_path' => 'g:availability',
                 'xml_availability_path' => 'g:availability',
@@ -106,6 +107,7 @@ class SupplierXmlGoogleMerchantParserTest extends TestCase
 <feed xmlns="http://www.w3.org/2005/Atom" xmlns:g="http://base.google.com/ns/1.0">
   <entry>
     <g:id>MT-100</g:id>
+    <g:SKU>3-121-MT-100</g:SKU>
     <g:title>Knife</g:title>
     <g:gtin>5901234567001</g:gtin>
     <g:availability>in stock</g:availability>
@@ -113,6 +115,7 @@ class SupplierXmlGoogleMerchantParserTest extends TestCase
   </entry>
   <entry>
     <g:id>MT-200</g:id>
+    <g:SKU>3-121-MT-200</g:SKU>
     <g:title>Bag</g:title>
     <g:gtin>5901234567002</g:gtin>
     <g:availability>out of stock</g:availability>
@@ -120,6 +123,7 @@ class SupplierXmlGoogleMerchantParserTest extends TestCase
   </entry>
   <entry>
     <g:id>MT-300</g:id>
+    <g:SKU>3-121-MT-300</g:SKU>
     <g:title>Preorder item</g:title>
     <g:gtin>5901234567003</g:gtin>
     <g:availability>preorder</g:availability>

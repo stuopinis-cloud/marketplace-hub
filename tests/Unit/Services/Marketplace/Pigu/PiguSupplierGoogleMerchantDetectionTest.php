@@ -14,11 +14,13 @@ class PiguSupplierGoogleMerchantDetectionTest extends TestCase
         $this->assertSame('//*[local-name()="entry"]', $detected['item_path']);
         $this->assertGreaterThanOrEqual(2, $detected['item_count']);
         $this->assertContains('g:id', $detected['available_fields']);
+        $this->assertContains('g:SKU', $detected['available_fields']);
         $this->assertContains('g:gtin', $detected['available_fields']);
         $this->assertContains('g:availability', $detected['available_fields']);
         $this->assertContains('g:price', $detected['available_fields']);
         $this->assertContains('g:title', $detected['available_fields']);
-        $this->assertSame('g:id', $detected['sku_path']);
+        $this->assertSame('g:SKU', $detected['sku_path']);
+        $this->assertNotSame('g:id', $detected['sku_path']);
         $this->assertSame('g:gtin', $detected['barcode_path']);
         $this->assertSame('g:availability', $detected['stock_path']);
         $this->assertSame('g:availability', $detected['availability_path']);
@@ -26,7 +28,8 @@ class PiguSupplierGoogleMerchantDetectionTest extends TestCase
         $this->assertSame('g:title', $detected['title_path']);
         $this->assertSame('http://base.google.com/ns/1.0', $detected['namespaces']['g'] ?? null);
         $this->assertNotEmpty($detected['preview_rows']);
-        $this->assertSame('MT-100', $detected['preview_rows'][0]['sku']);
+        $this->assertSame('MT-100', $detected['preview_rows'][0]['merchant_id']);
+        $this->assertSame('3-121-MT-100', $detected['preview_rows'][0]['sku']);
         $this->assertSame('5901234567001', $detected['preview_rows'][0]['ean']);
         $this->assertSame('in stock', $detected['preview_rows'][0]['stock']);
         $this->assertSame('32.71 EUR', $detected['preview_rows'][0]['price']);
@@ -50,6 +53,7 @@ class PiguSupplierGoogleMerchantDetectionTest extends TestCase
   <title>M-Tac</title>
   <entry>
     <g:id>MT-100</g:id>
+    <g:SKU>3-121-MT-100</g:SKU>
     <g:title>Knife</g:title>
     <g:gtin>5901234567001</g:gtin>
     <g:availability>in stock</g:availability>
@@ -57,6 +61,7 @@ class PiguSupplierGoogleMerchantDetectionTest extends TestCase
   </entry>
   <entry>
     <g:id>MT-200</g:id>
+    <g:SKU>3-121-MT-200</g:SKU>
     <g:title>Bag</g:title>
     <g:gtin>5901234567002</g:gtin>
     <g:availability>out of stock</g:availability>

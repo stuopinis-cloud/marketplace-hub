@@ -28,6 +28,7 @@ class SupplierXmlParser
 
     public function __construct(
         private readonly SupplierAvailabilityEvaluator $availabilityEvaluator = new SupplierAvailabilityEvaluator,
+        private readonly SupplierXmlFieldValueResolver $fieldResolver = new SupplierXmlFieldValueResolver,
     ) {}
 
     /**
@@ -97,36 +98,40 @@ class SupplierXmlParser
                 continue;
             }
 
-            $sku = $this->normalizeWhitespace($this->valueAt($xpath, $skuPath, $item));
+            $sku = $this->normalizeWhitespace($this->fieldResolver->valueAt($xpath, $skuPath, $item));
 
             if ($sku === null || $sku === '') {
                 $skipped[] = [
                     'sku' => '—',
                     'issue_code' => 'missing_sku',
-                    'message' => 'Missing SKU on XML item '.((int) $index + 1).'.',
+                    'message' => 'Missing SKU on XML item '.((int) $index + 1).' for configured field „'.$skuPath.'“ (no silent fallback).',
                 ];
 
                 continue;
             }
 
             $stockRaw = $stockPath !== null
-                ? $this->normalizeWhitespace($this->valueAt($xpath, $stockPath, $item))
+                ? $this->normalizeWhitespace($this->fieldResolver->valueAt($xpath, $stockPath, $item))
                 : null;
             $availabilityRaw = $availabilityPath !== null
-                ? $this->normalizeWhitespace($this->valueAt($xpath, $availabilityPath, $item))
+                ? $this->normalizeWhitespace($this->fieldResolver->valueAt($xpath, $availabilityPath, $item))
                 : null;
             [$quantity, $availabilityStatus] = $this->resolveStock($stockRaw, $availabilityRaw, $supplier);
 
             $barcode = $barcodePath !== null
-                ? $this->normalizeWhitespace($this->valueAt($xpath, $barcodePath, $item))
+                ? $this->normalizeWhitespace($this->fieldResolver->valueAt($xpath, $barcodePath, $item))
                 : null;
             $title = $titlePath !== null
-                ? $this->normalizeWhitespace($this->valueAt($xpath, $titlePath, $item))
+                ? $this->normalizeWhitespace($this->fieldResolver->valueAt($xpath, $titlePath, $item))
                 : null;
             $priceRaw = $pricePath !== null
-                ? $this->normalizeWhitespace($this->valueAt($xpath, $pricePath, $item))
+                ? $this->normalizeWhitespace($this->fieldResolver->valueAt($xpath, $pricePath, $item))
                 : null;
             [$price, $currency] = $this->parsePriceWithCurrency($priceRaw);
+
+            // Capture merchant internal id separately for diagnostics/reconciliation — never as SKU.
+            $merchantId = $this->normalizeWhitespace($this->fieldResolver->valueAt($xpath, 'g:id', $item))
+                ?? $this->normalizeWhitespace($this->fieldResolver->valueAt($xpath, 'id', $item));
 
             $entries[] = [
                 'sku' => $sku,
@@ -138,6 +143,8 @@ class SupplierXmlParser
                 'availability_status' => $availabilityStatus,
                 'raw_payload' => array_filter([
                     'sku' => $sku,
+                    'sku_field' => $skuPath,
+                    'merchant_id' => $merchantId,
                     'stock' => $stockRaw,
                     'availability' => $availabilityRaw ?? ((isset($stockRaw) && ! is_numeric($stockRaw)) ? $stockRaw : null),
                     'barcode' => $barcode,
@@ -152,46 +159,6 @@ class SupplierXmlParser
             'entries' => $entries,
             'skipped' => $skipped,
         ];
-    }
-
-    private function valueAt(DOMXPath $xpath, string $path, DOMNode $context): ?string
-    {
-        foreach ($this->fieldQueryCandidates($path) as $candidate) {
-            $previous = libxml_use_internal_errors(true);
-            $nodes = @$xpath->query($candidate, $context);
-            libxml_clear_errors();
-            libxml_use_internal_errors($previous);
-
-            if ($nodes === false || $nodes->length === 0) {
-                continue;
-            }
-
-            $value = trim((string) $nodes->item(0)?->textContent);
-
-            if ($value !== '') {
-                return $value;
-            }
-        }
-
-        return null;
-    }
-
-    /**
-     * @return array<int, string>
-     */
-    private function fieldQueryCandidates(string $path): array
-    {
-        $candidates = [$path];
-        $local = str_contains($path, ':')
-            ? (string) explode(':', $path, 2)[1]
-            : $path;
-
-        if (! str_contains($path, 'local-name()')) {
-            $candidates[] = '*[local-name()="'.$local.'"]';
-            $candidates[] = './/*[local-name()="'.$local.'"]';
-        }
-
-        return array_values(array_unique($candidates));
     }
 
     /**
