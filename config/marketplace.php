@@ -54,6 +54,13 @@ return [
             'representative_name' => env('PIGU_REPRESENTATIVE_NAME'),
             'representative_address' => env('PIGU_REPRESENTATIVE_ADDRESS'),
             'representative_email' => env('PIGU_REPRESENTATIVE_EMAIL'),
+            'preview' => [
+                // Keep retry_after (queue) above this timeout so long jobs are not released early.
+                'timeout' => (int) env('PIGU_PREVIEW_JOB_TIMEOUT', 1800),
+                'tries' => 1,
+                'queue' => env('PIGU_PREVIEW_QUEUE', 'default'),
+                'lock_seconds' => (int) env('PIGU_PREVIEW_LOCK_SECONDS', 1900),
+            ],
         ],
     ],
 

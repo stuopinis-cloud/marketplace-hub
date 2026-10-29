@@ -40,7 +40,8 @@ return [
             'connection' => env('DB_QUEUE_CONNECTION'),
             'table' => env('DB_QUEUE_TABLE', 'jobs'),
             'queue' => env('DB_QUEUE', 'default'),
-            'retry_after' => (int) env('DB_QUEUE_RETRY_AFTER', 90),
+            // Must exceed longest job timeout (daily sync 7200s, Pigu preview 1800s).
+            'retry_after' => (int) env('DB_QUEUE_RETRY_AFTER', 7300),
             'after_commit' => false,
         ],
 

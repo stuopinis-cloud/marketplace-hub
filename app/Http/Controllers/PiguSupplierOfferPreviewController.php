@@ -4,6 +4,7 @@ namespace App\Http\Controllers;
 
 use App\Models\Supplier;
 use App\Services\Marketplace\Pigu\PiguSupplierOfferPreviewService;
+use RuntimeException;
 use Symfony\Component\HttpFoundation\BinaryFileResponse;
 
 class PiguSupplierOfferPreviewController extends Controller
@@ -12,7 +13,11 @@ class PiguSupplierOfferPreviewController extends Controller
     {
         abort_unless($supplier->connector_type === Supplier::CONNECTOR_XML_URL, 404);
 
-        $files = $preview->ensurePreviewFiles($supplier);
+        try {
+            $files = $preview->readyDownloadPaths($supplier);
+        } catch (RuntimeException $e) {
+            abort(409, $e->getMessage());
+        }
 
         return response()->download(
             $files['absolute_path'],
@@ -25,7 +30,11 @@ class PiguSupplierOfferPreviewController extends Controller
     {
         abort_unless($supplier->connector_type === Supplier::CONNECTOR_XML_URL, 404);
 
-        $files = $preview->ensurePreviewFiles($supplier);
+        try {
+            $files = $preview->readyDownloadPaths($supplier);
+        } catch (RuntimeException $e) {
+            abort(409, $e->getMessage());
+        }
 
         return response()->download(
             $files['skipped_csv_absolute_path'],

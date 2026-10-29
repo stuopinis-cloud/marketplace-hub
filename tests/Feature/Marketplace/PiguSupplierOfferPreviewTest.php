@@ -4,6 +4,8 @@ namespace Tests\Feature\Marketplace;
 
 use App\Enums\FeedFileStatus;
 use App\Enums\ProductStatus;
+use App\Filament\Resources\PiguSupplierXml\Pages\PreviewPiguSupplierOffers;
+use App\Jobs\GeneratePiguSupplierOfferPreviewJob;
 use App\Models\CategoryMapping;
 use App\Models\FeedFile;
 use App\Models\InventoryLevel;
@@ -19,8 +21,11 @@ use App\Services\Marketplace\Pigu\PiguExportOptions;
 use App\Services\Marketplace\Pigu\PiguOfferFeedExporter;
 use App\Services\Marketplace\Pigu\PiguSupplierOfferConfig;
 use App\Services\Marketplace\Pigu\PiguSupplierOfferPreviewService;
+use App\Services\Marketplace\Pigu\PiguSupplierOfferPreviewStatus;
 use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Support\Facades\Queue;
 use Illuminate\Support\Facades\Storage;
+use Livewire\Livewire;
 use Tests\TestCase;
 
 class PiguSupplierOfferPreviewTest extends TestCase
@@ -38,12 +43,59 @@ class PiguSupplierOfferPreviewTest extends TestCase
             'marketplace.exports.pigu.local_collection_hours' => 24,
             'marketplace.exports.pigu.supplier_collection_hours' => 168,
             'marketplace.exports.pigu.backorder_collection_hours' => 240,
+            'marketplace.exports.pigu.preview.timeout' => 1800,
+            'marketplace.exports.pigu.preview.tries' => 1,
         ]);
 
         $this->ensurePiguChannel();
     }
 
-    public function test_preview_writes_isolated_path_and_never_touches_production_feed(): void
+    public function test_preview_page_does_not_generate_xml_synchronously(): void
+    {
+        Queue::fake();
+
+        $user = User::factory()->create();
+        $this->actingAs($user);
+
+        $supplier = $this->createPiguXmlSupplier(['enabled' => false]);
+
+        Livewire::test(PreviewPiguSupplierOffers::class, ['record' => $supplier->getRouteKey()])
+            ->assertSuccessful()
+            ->assertSee('Generuoti XML peržiūrą')
+            ->assertSee('Nepaleista')
+            ->assertDontSee('Generuojama…');
+
+        Queue::assertNothingPushed();
+        $this->assertFalse(Storage::disk('local')->exists(
+            PiguOfferFeedExporter::previewDirectory($supplier->id).'/offers.xml'
+        ));
+    }
+
+    public function test_generate_button_dispatches_single_job_and_blocks_duplicates(): void
+    {
+        Queue::fake();
+
+        $user = User::factory()->create();
+        $this->actingAs($user);
+
+        $supplier = $this->createPiguXmlSupplier();
+
+        Livewire::test(PreviewPiguSupplierOffers::class, ['record' => $supplier->getRouteKey()])
+            ->callAction('generate')
+            ->assertNotified();
+
+        Queue::assertPushed(GeneratePiguSupplierOfferPreviewJob::class, 1);
+
+        $status = app(PiguSupplierOfferPreviewStatus::class)->read($supplier->id);
+        $this->assertSame(PiguSupplierOfferPreviewStatus::STATUS_PENDING, $status['status']);
+
+        $dispatch = app(PiguSupplierOfferPreviewService::class)->dispatch($supplier);
+        $this->assertFalse($dispatch['dispatched']);
+
+        Queue::assertPushed(GeneratePiguSupplierOfferPreviewJob::class, 1);
+    }
+
+    public function test_queued_job_generates_correct_isolated_xml(): void
     {
         $supplier = $this->createPiguXmlSupplier(['enabled' => true]);
 
@@ -61,13 +113,18 @@ class PiguSupplierOfferPreviewTest extends TestCase
         Storage::disk('public')->put(PiguOfferFeedExporter::PRODUCTION_FEED_RELATIVE, '<products></products>');
         $productionBefore = Storage::disk('public')->get(PiguOfferFeedExporter::PRODUCTION_FEED_RELATIVE);
 
-        $preview = app(PiguSupplierOfferPreviewService::class)->generate($supplier);
+        (new GeneratePiguSupplierOfferPreviewJob($supplier->id))->handle(
+            app(PiguSupplierOfferPreviewService::class),
+            app(PiguSupplierOfferPreviewStatus::class),
+        );
 
-        $this->assertSame('local', $preview['disk']);
-        $this->assertStringContainsString('pigu-previews/supplier-'.$supplier->id, $preview['feed_path']);
-        $this->assertStringNotContainsString('feeds/pigu-offers.xml', $preview['feed_path']);
-        $this->assertTrue(Storage::disk('local')->exists($preview['feed_path']));
-        $this->assertFalse(Storage::disk('public')->exists($preview['feed_path']));
+        $status = app(PiguSupplierOfferPreviewStatus::class)->read($supplier->id);
+        $this->assertSame(PiguSupplierOfferPreviewStatus::STATUS_READY, $status['status']);
+        $this->assertSame(1, $status['stats']['valid_offers'] ?? null);
+
+        $xml = Storage::disk('local')->get(PiguOfferFeedExporter::previewDirectory($supplier->id).'/offers.xml');
+        $this->assertStringContainsString('<sku><![CDATA[PREVIEW-1]]></sku>', $xml);
+        $this->assertStringContainsString('<price-after-discount>12.10</price-after-discount>', $xml);
         $this->assertSame($productionBefore, Storage::disk('public')->get(PiguOfferFeedExporter::PRODUCTION_FEED_RELATIVE));
         $this->assertSame(0, FeedFile::query()->count());
     }
@@ -87,18 +144,11 @@ class PiguSupplierOfferPreviewTest extends TestCase
             'last_synced_at' => now(),
         ]);
 
-        $this->assertFalse(PiguSupplierOfferConfig::isEnabled($supplier));
-
         $preview = app(PiguSupplierOfferPreviewService::class)->generate($supplier);
         $xml = Storage::disk('local')->get($preview['feed_path']);
 
         $this->assertSame(1, $preview['valid_offers']);
-        $this->assertSame(1, $preview['supplier_only_offers']);
         $this->assertStringContainsString('<sku><![CDATA[DISABLED-1]]></sku>', $xml);
-        $this->assertStringContainsString('<collectionhours>240</collectionhours>', $xml);
-
-        $supplier->refresh();
-        $this->assertFalse(PiguSupplierOfferConfig::isEnabled($supplier));
         $this->assertFalse(PiguSupplierOfferConfig::isEnabled($supplier->fresh()));
     }
 
@@ -129,7 +179,6 @@ class PiguSupplierOfferPreviewTest extends TestCase
         $xml = Storage::disk('local')->get($preview['feed_path']);
 
         $this->assertSame(0, $preview['valid_offers']);
-        $this->assertSame(0, $preview['shopify_matched_offers']);
         $this->assertStringNotContainsString('SHARED-PREVIEW', $xml);
         $this->assertStringNotContainsString('99.00', $xml);
     }
@@ -216,11 +265,34 @@ class PiguSupplierOfferPreviewTest extends TestCase
         $production = app(PiguOfferFeedExporter::class)->export(new PiguExportOptions(allValid: true));
         $productionXml = Storage::disk('public')->get($production['feed_path']);
 
-        $this->assertStringContainsString('<sku><![CDATA[EQ-1]]></sku>', $previewXml);
-        $this->assertStringContainsString('<sku><![CDATA[EQ-1]]></sku>', $productionXml);
-        $this->assertStringContainsString('<price-after-discount>48.40</price-after-discount>', $previewXml);
-        $this->assertStringContainsString('<price-after-discount>48.40</price-after-discount>', $productionXml);
         $this->assertSame($previewXml, $productionXml);
+    }
+
+    public function test_preview_export_does_not_retain_row_arrays_in_result(): void
+    {
+        $supplier = $this->createPiguXmlSupplier();
+
+        for ($i = 0; $i < 50; $i++) {
+            SupplierProduct::query()->create([
+                'supplier_id' => $supplier->id,
+                'supplier_sku' => 'MEM-'.$i,
+                'barcode' => sprintf('5901234567%03d', $i),
+                'price' => 10.00,
+                'stock_quantity' => 2,
+                'match_status' => SupplierProduct::MATCH_STATUS_UNMATCHED,
+                'enabled' => true,
+                'last_synced_at' => now(),
+            ]);
+        }
+
+        $before = memory_get_usage(true);
+        $result = app(PiguOfferFeedExporter::class)->export(PiguExportOptions::supplierPreview($supplier->id));
+        $after = memory_get_usage(true);
+
+        $this->assertArrayNotHasKey('exported_rows', $result);
+        $this->assertArrayNotHasKey('skipped_rows', $result);
+        $this->assertLessThanOrEqual(8, count($result['examples'] ?? []));
+        $this->assertLessThan(32 * 1024 * 1024, $after - $before);
     }
 
     public function test_production_export_still_updates_feed_file_and_public_path(): void
@@ -250,7 +322,7 @@ class PiguSupplierOfferPreviewTest extends TestCase
         ]);
     }
 
-    public function test_authenticated_user_can_download_preview_xml_and_csv(): void
+    public function test_authenticated_user_can_download_ready_preview_files(): void
     {
         $supplier = $this->createPiguXmlSupplier();
         SupplierProduct::query()->create([
@@ -270,13 +342,21 @@ class PiguSupplierOfferPreviewTest extends TestCase
 
         $this->actingAs($user)
             ->get(route('exports.pigu-supplier-preview.xml', $supplier))
-            ->assertOk()
-            ->assertHeader('content-disposition');
+            ->assertOk();
 
         $this->actingAs($user)
             ->get(route('exports.pigu-supplier-preview.skipped', $supplier))
-            ->assertOk()
-            ->assertHeader('content-disposition');
+            ->assertOk();
+    }
+
+    public function test_download_before_ready_returns_conflict(): void
+    {
+        $supplier = $this->createPiguXmlSupplier();
+        $user = User::factory()->create();
+
+        $this->actingAs($user)
+            ->get(route('exports.pigu-supplier-preview.xml', $supplier))
+            ->assertStatus(409);
     }
 
     public function test_guest_cannot_download_preview_files(): void

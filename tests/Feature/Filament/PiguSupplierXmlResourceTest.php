@@ -7,10 +7,10 @@ use App\Filament\Resources\PiguSupplierXml\Pages\ListPiguSupplierXml;
 use App\Filament\Resources\PiguSupplierXml\Pages\PreviewPiguSupplierOffers;
 use App\Filament\Resources\PiguSupplierXml\Pages\ViewPiguSupplierXml;
 use App\Models\Supplier;
-use App\Models\SupplierProduct;
 use App\Models\User;
 use App\Services\Marketplace\Pigu\PiguSupplierOfferConfig;
 use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Support\Facades\Queue;
 use Illuminate\Support\Facades\Storage;
 use Livewire\Livewire;
 use Tests\TestCase;
@@ -260,10 +260,11 @@ class PiguSupplierXmlResourceTest extends TestCase
             ->assertActionExists('previewPiguXml');
     }
 
-    public function test_preview_page_generates_isolated_stats_without_enabling_supplier(): void
+    public function test_preview_page_loads_without_generating_or_enabling_supplier(): void
     {
         Storage::fake('local');
         Storage::fake('public');
+        Queue::fake();
 
         $user = User::factory()->create();
         $this->actingAs($user);
@@ -293,24 +294,15 @@ class PiguSupplierXmlResourceTest extends TestCase
             ],
         ]);
 
-        SupplierProduct::query()->create([
-            'supplier_id' => $supplier->id,
-            'supplier_sku' => 'PAGE-1',
-            'barcode' => '5901234567555',
-            'price' => 10.00,
-            'stock_quantity' => 2,
-            'match_status' => SupplierProduct::MATCH_STATUS_UNMATCHED,
-            'enabled' => true,
-            'last_synced_at' => now(),
-        ]);
-
         Livewire::test(PreviewPiguSupplierOffers::class, ['record' => $supplier->getRouteKey()])
             ->assertSuccessful()
-            ->assertSee('Galiojantys pasiūlymai')
+            ->assertSee('Generuoti XML peržiūrą')
             ->assertSee('Atsisiųsti XML')
-            ->assertSee('Atsisiųsti atmestas prekes CSV');
+            ->assertSee('Atsisiųsti atmestas prekes CSV')
+            ->assertSee('Nepaleista');
 
         $supplier->refresh();
         $this->assertFalse(PiguSupplierOfferConfig::isEnabled($supplier));
+        Queue::assertNothingPushed();
     }
 }

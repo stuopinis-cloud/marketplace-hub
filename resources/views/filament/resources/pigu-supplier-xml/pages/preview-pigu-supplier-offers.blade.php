@@ -1,7 +1,18 @@
 <x-filament-panels::page>
     @php
-        /** @var array<string, mixed>|null $preview */
-        $preview = $this->preview;
+        $status = $this->previewStatus;
+        $state = $status['status'] ?? 'idle';
+        $stats = is_array($status['stats'] ?? null) ? $status['stats'] : [];
+        $busy = in_array($state, ['pending', 'running'], true);
+
+        $statusLabels = [
+            'idle' => 'Nepaleista',
+            'pending' => 'Laukiama',
+            'running' => 'Generuojama',
+            'ready' => 'Paruošta',
+            'failed' => 'Klaida',
+        ];
+
         $hoursSourceLabels = [
             'supplier' => 'Shopify (tiekėjo likutis)',
             'supplier_only' => 'Tik tiekėjas',
@@ -23,35 +34,81 @@
         ];
     @endphp
 
-    @if ($preview)
-        <div class="space-y-6">
-            <div class="rounded-xl bg-amber-50 p-4 text-sm text-amber-950 ring-1 ring-amber-200 dark:bg-amber-950/40 dark:text-amber-100 dark:ring-amber-900">
-                Izoliuota peržiūra — negeneruoja viešo <code>pigu-offers.xml</code>, neatnaujina FeedFile įrašų
-                ir nekeičia tiekėjo aktyvacijos
-                (išsaugota būsena: {{ ($preview['pigu_enabled_saved'] ?? false) ? 'Aktyvuota' : 'Neaktyvuota' }}).
-                XML rodo tik šio tiekėjo indėlį į kombinuotą feed’ą, gerbiant kitų tiekėjų prioritetą.
-            </div>
+    <div @if ($busy) wire:poll.2s="refreshStatus" @endif class="space-y-6">
+        <div class="rounded-xl bg-amber-50 p-4 text-sm text-amber-950 ring-1 ring-amber-200 dark:bg-amber-950/40 dark:text-amber-100 dark:ring-amber-900">
+            Izoliuota peržiūra — negeneruoja viešo <code>pigu-offers.xml</code>, neatnaujina FeedFile įrašų
+            ir nekeičia tiekėjo aktyvacijos
+            (išsaugota būsena: {{ ($status['pigu_enabled_saved'] ?? false) ? 'Aktyvuota' : 'Neaktyvuota' }}).
+            Generavimas vyksta fone; puslapis neužkrauna viso katalogo HTTP užklausoje.
+        </div>
 
+        <div class="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
+            <div class="rounded-xl bg-white p-4 shadow-sm ring-1 ring-gray-950/5 dark:bg-gray-900 dark:ring-white/10">
+                <div class="text-sm text-gray-500">Būsena</div>
+                <div class="mt-1 text-xl font-semibold">{{ $statusLabels[$state] ?? $state }}</div>
+            </div>
+            <div class="rounded-xl bg-white p-4 shadow-sm ring-1 ring-gray-950/5 dark:bg-gray-900 dark:ring-white/10">
+                <div class="text-sm text-gray-500">Apdorota produktų</div>
+                <div class="mt-1 text-xl font-semibold">{{ $status['products_processed'] ?? 0 }}</div>
+            </div>
+            <div class="rounded-xl bg-white p-4 shadow-sm ring-1 ring-gray-950/5 dark:bg-gray-900 dark:ring-white/10">
+                <div class="text-sm text-gray-500">Sugeneruota pasiūlymų</div>
+                <div class="mt-1 text-xl font-semibold">{{ $status['offers_generated'] ?? 0 }}</div>
+            </div>
+            <div class="rounded-xl bg-white p-4 shadow-sm ring-1 ring-gray-950/5 dark:bg-gray-900 dark:ring-white/10">
+                <div class="text-sm text-gray-500">Atmesta</div>
+                <div class="mt-1 text-xl font-semibold">{{ $status['rejected'] ?? 0 }}</div>
+            </div>
+        </div>
+
+        <div class="rounded-xl bg-white p-4 text-sm shadow-sm ring-1 ring-gray-950/5 dark:bg-gray-900 dark:ring-white/10">
+            <div>Paskutinė sėkminga generacija:
+                <strong>
+                    @if (! empty($status['finished_at']) && $state === 'ready')
+                        {{ \Illuminate\Support\Carbon::parse($status['finished_at'])->timezone('Europe/Vilnius')->format('Y-m-d H:i:s') }}
+                    @else
+                        —
+                    @endif
+                </strong>
+            </div>
+            <div class="mt-1">Trukmė:
+                <strong>
+                    @if (($status['duration_seconds'] ?? null) !== null && $state === 'ready')
+                        {{ $status['duration_seconds'] }} s
+                    @else
+                        —
+                    @endif
+                </strong>
+            </div>
+            <div class="mt-1">Tiekėjo produktų (DB):
+                <strong>{{ $status['total_supplier_products'] ?? 0 }}</strong>
+            </div>
+        </div>
+
+        @if ($state === 'failed')
+            <div class="rounded-xl bg-red-50 p-4 text-sm text-red-900 ring-1 ring-red-200 dark:bg-red-950/40 dark:text-red-100 dark:ring-red-900">
+                <div class="font-semibold">Generavimas nepavyko</div>
+                <div class="mt-1">{{ $status['error'] ?? 'Nežinoma klaida.' }}</div>
+            </div>
+        @endif
+
+        @if ($state === 'ready' && $stats !== [])
             <div class="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
                 <div class="rounded-xl bg-white p-4 shadow-sm ring-1 ring-gray-950/5 dark:bg-gray-900 dark:ring-white/10">
-                    <div class="text-sm text-gray-500">Iš viso tiekėjo produktų</div>
-                    <div class="mt-1 text-2xl font-semibold">{{ $preview['total_supplier_products'] ?? 0 }}</div>
-                </div>
-                <div class="rounded-xl bg-white p-4 shadow-sm ring-1 ring-gray-950/5 dark:bg-gray-900 dark:ring-white/10">
                     <div class="text-sm text-gray-500">Galiojantys pasiūlymai</div>
-                    <div class="mt-1 text-2xl font-semibold">{{ $preview['valid_offers'] ?? 0 }}</div>
+                    <div class="mt-1 text-2xl font-semibold">{{ $stats['valid_offers'] ?? 0 }}</div>
                 </div>
                 <div class="rounded-xl bg-white p-4 shadow-sm ring-1 ring-gray-950/5 dark:bg-gray-900 dark:ring-white/10">
                     <div class="text-sm text-gray-500">Shopify sutapimai</div>
-                    <div class="mt-1 text-2xl font-semibold">{{ $preview['shopify_matched_offers'] ?? 0 }}</div>
+                    <div class="mt-1 text-2xl font-semibold">{{ $stats['shopify_matched_offers'] ?? 0 }}</div>
                 </div>
                 <div class="rounded-xl bg-white p-4 shadow-sm ring-1 ring-gray-950/5 dark:bg-gray-900 dark:ring-white/10">
                     <div class="text-sm text-gray-500">Tik tiekėjo pasiūlymai</div>
-                    <div class="mt-1 text-2xl font-semibold">{{ $preview['supplier_only_offers'] ?? 0 }}</div>
+                    <div class="mt-1 text-2xl font-semibold">{{ $stats['supplier_only_offers'] ?? 0 }}</div>
                 </div>
                 <div class="rounded-xl bg-white p-4 shadow-sm ring-1 ring-gray-950/5 dark:bg-gray-900 dark:ring-white/10">
                     <div class="text-sm text-gray-500">Deduplikuota</div>
-                    <div class="mt-1 text-2xl font-semibold">{{ $preview['deduplicated_offers'] ?? 0 }}</div>
+                    <div class="mt-1 text-2xl font-semibold">{{ $stats['deduplicated_offers'] ?? 0 }}</div>
                 </div>
             </div>
 
@@ -68,7 +125,7 @@
                             </tr>
                         </thead>
                         <tbody>
-                            @forelse (($preview['skipped_by_reason'] ?? []) as $code => $count)
+                            @forelse (($stats['skipped_by_reason'] ?? []) as $code => $count)
                                 <tr class="border-t border-gray-100 dark:border-white/5">
                                     <td class="px-4 py-2">{{ $skipLabels[$code] ?? $code }}</td>
                                     <td class="px-4 py-2">{{ $count }}</td>
@@ -100,7 +157,7 @@
                             </tr>
                         </thead>
                         <tbody>
-                            @forelse (($preview['examples'] ?? []) as $example)
+                            @forelse (($stats['examples'] ?? []) as $example)
                                 <tr class="border-t border-gray-100 dark:border-white/5">
                                     <td class="px-4 py-2 font-mono">{{ $example['sku'] ?? '—' }}</td>
                                     <td class="px-4 py-2 font-mono">{{ $example['ean'] ?? '—' }}</td>
@@ -118,6 +175,14 @@
                     </table>
                 </div>
             </div>
-        </div>
-    @endif
+        @elseif ($state === 'idle')
+            <div class="rounded-xl bg-white p-4 text-sm text-gray-600 shadow-sm ring-1 ring-gray-950/5 dark:bg-gray-900 dark:text-gray-300 dark:ring-white/10">
+                Spauskite <strong>Generuoti XML peržiūrą</strong>, kad paleistumėte foninį generavimą.
+            </div>
+        @elseif ($busy)
+            <div class="rounded-xl bg-white p-4 text-sm text-gray-600 shadow-sm ring-1 ring-gray-950/5 dark:bg-gray-900 dark:text-gray-300 dark:ring-white/10">
+                Generuojama fone… būsena atnaujinama automatiškai.
+            </div>
+        @endif
+    </div>
 </x-filament-panels::page>
