@@ -38,4 +38,14 @@ Route::middleware('auth')->group(function (): void {
         '/exports/pigu-supplier-preview/{supplier}/skipped.csv',
         [PiguSupplierOfferPreviewController::class, 'downloadSkippedCsv'],
     )->name('exports.pigu-supplier-preview.skipped');
+
+    Route::get(
+        '/exports/pigu-supplier-preview/{supplier}/combined/offers.xml',
+        [PiguSupplierOfferPreviewController::class, 'downloadCombinedXml'],
+    )->name('exports.pigu-supplier-preview.combined.xml');
+
+    Route::get(
+        '/exports/pigu-supplier-preview/{supplier}/combined/skipped.csv',
+        [PiguSupplierOfferPreviewController::class, 'downloadCombinedSkippedCsv'],
+    )->name('exports.pigu-supplier-preview.combined.skipped');
 });

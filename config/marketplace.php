@@ -60,6 +60,10 @@ return [
                 'tries' => 1,
                 'queue' => env('PIGU_PREVIEW_QUEUE', 'default'),
                 'lock_seconds' => (int) env('PIGU_PREVIEW_LOCK_SECONDS', 1900),
+                'diagnostic_skus' => array_values(array_filter(array_map(
+                    static fn (string $sku): string => trim($sku),
+                    explode(',', (string) env('PIGU_PREVIEW_DIAGNOSTIC_SKUS', '10001001,10183008')),
+                ))),
             ],
         ],
     ],

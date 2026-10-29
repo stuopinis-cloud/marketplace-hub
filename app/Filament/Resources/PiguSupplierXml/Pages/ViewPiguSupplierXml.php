@@ -29,6 +29,10 @@ class ViewPiguSupplierXml extends ViewRecord
                 ->label('Peržiūrėti Pigu XML')
                 ->icon(Heroicon::OutlinedEye)
                 ->url(fn (): string => PiguSupplierXmlResource::getUrl('preview', ['record' => $this->getRecord()])),
+            Action::make('previewCombinedPiguXml')
+                ->label('Peržiūrėti bendrą Pigu XML')
+                ->icon(Heroicon::OutlinedDocumentDuplicate)
+                ->url(fn (): string => PiguSupplierXmlResource::getUrl('previewCombined', ['record' => $this->getRecord()])),
             EditAction::make()->label('Redaguoti'),
             Action::make('syncNow')
                 ->label('Sinchronizuoti dabar')

@@ -56,6 +56,12 @@ class PiguOfferFeedExporter
     /** @var array<string, int> */
     private array $previewSkippedByReason = [];
 
+    /** @var array<string, true> */
+    private array $diagnosticSkuLookup = [];
+
+    /** @var array<string, array<string, mixed>> */
+    private array $diagnosticResults = [];
+
     private int $previewShopifyMatched = 0;
 
     private int $previewSupplierOnly = 0;
@@ -83,9 +89,13 @@ class PiguOfferFeedExporter
         private readonly PiguSupplierPriceCalculator $priceCalculator = new PiguSupplierPriceCalculator,
     ) {}
 
-    public static function previewDirectory(int $supplierId): string
+    public static function previewDirectory(int $supplierId, string $scope = PiguExportOptions::PREVIEW_SCOPE_CONTRIBUTION): string
     {
-        return 'pigu-previews/supplier-'.$supplierId;
+        $base = 'pigu-previews/supplier-'.$supplierId;
+
+        return $scope === PiguExportOptions::PREVIEW_SCOPE_COMBINED
+            ? $base.'/combined'
+            : $base;
     }
 
     /**
@@ -138,9 +148,18 @@ class PiguOfferFeedExporter
         $this->duplicateEanCount = 0;
         $this->supplierCache = [];
         $this->skippedCsvHandle = null;
+        $this->diagnosticResults = [];
+        $this->diagnosticSkuLookup = [];
 
         if ($options->preview && $options->previewSupplierId === null) {
             throw new RuntimeException('Preview export requires preview_supplier_id.');
+        }
+
+        foreach ((array) config('marketplace.exports.pigu.preview.diagnostic_skus', []) as $sku) {
+            $sku = trim((string) $sku);
+            if ($sku !== '') {
+                $this->diagnosticSkuLookup[$sku] = true;
+            }
         }
 
         $channel = $this->products->resolveChannel();
@@ -151,7 +170,7 @@ class PiguOfferFeedExporter
         $disk = Storage::disk($diskName);
 
         if ($isPreview) {
-            $previewDir = self::previewDirectory((int) $options->previewSupplierId);
+            $previewDir = self::previewDirectory((int) $options->previewSupplierId, $options->previewScope);
             $relativePath = $previewDir.'/offers.xml';
             $tempPath = $previewDir.'/offers.xml.tmp';
             $failedCsvRelative = $previewDir.'/skipped.csv';
@@ -406,6 +425,8 @@ class PiguOfferFeedExporter
                 'deduplicated_offers' => $this->previewDeduplicated,
                 'skipped_by_reason' => $this->previewSkippedByReason,
             ],
+            'diagnostics' => $this->diagnosticResults,
+            'preview_scope' => $isPreview ? $options->previewScope : null,
         ];
     }
 
@@ -750,7 +771,7 @@ class PiguOfferFeedExporter
      */
     private function shouldWriteOfferXml(array $built, PiguExportOptions $options): bool
     {
-        if (! $options->isPreview()) {
+        if (! $options->isPreview() || $options->isCombinedPreview()) {
             return true;
         }
 
@@ -768,7 +789,7 @@ class PiguOfferFeedExporter
     }
 
     /**
-     * Track contribution stats / examples without retaining every offer row.
+     * Track contribution/combined stats and diagnostics without retaining every offer row.
      *
      * @param  array<string, mixed>  $built
      */
@@ -783,12 +804,34 @@ class PiguOfferFeedExporter
             return;
         }
 
-        if (($built['hours_source'] ?? null) === self::HOURS_SOURCE_SUPPLIER) {
-            $this->previewShopifyMatched++;
+        $sku = (string) ($built['sku'] ?? '');
+        if ($sku !== '' && isset($this->diagnosticSkuLookup[$sku])) {
+            $this->diagnosticResults[$sku] = [
+                'sku' => $sku,
+                'ean' => (string) ($built['ean'] ?? ''),
+                'stock' => isset($built['stock']) ? (int) $built['stock'] : null,
+                'collectionhours' => isset($built['collection_hours']) ? (int) $built['collection_hours'] : null,
+                'price' => $built['price_after'] ?? $built['price_before'] ?? null,
+                'hours_source' => $built['hours_source'] ?? null,
+                'supplier_id' => isset($built['supplier_id']) ? (int) $built['supplier_id'] : null,
+            ];
         }
 
-        if (($built['hours_source'] ?? null) === self::HOURS_SOURCE_SUPPLIER_ONLY) {
-            $this->previewSupplierOnly++;
+        $isFocusSupplierOffer = isset($built['supplier_id'])
+            && (int) $built['supplier_id'] === (int) $options->previewSupplierId
+            && in_array($built['hours_source'] ?? null, [
+                self::HOURS_SOURCE_SUPPLIER,
+                self::HOURS_SOURCE_SUPPLIER_ONLY,
+            ], true);
+
+        if ($isFocusSupplierOffer || $options->isContributionPreview()) {
+            if (($built['hours_source'] ?? null) === self::HOURS_SOURCE_SUPPLIER) {
+                $this->previewShopifyMatched++;
+            }
+
+            if (($built['hours_source'] ?? null) === self::HOURS_SOURCE_SUPPLIER_ONLY) {
+                $this->previewSupplierOnly++;
+            }
         }
 
         if (count($this->exampleOffers) >= self::MAX_PREVIEW_EXAMPLES) {
@@ -796,7 +839,7 @@ class PiguOfferFeedExporter
         }
 
         $this->exampleOffers[] = [
-            'sku' => (string) ($built['sku'] ?? ''),
+            'sku' => $sku,
             'ean' => (string) ($built['ean'] ?? ''),
             'price' => $built['price_after'] ?? $built['price_before'] ?? null,
             'stock' => isset($built['stock']) ? (int) $built['stock'] : null,
@@ -874,11 +917,17 @@ class PiguOfferFeedExporter
     {
         $options = $this->activeOptions ?? new PiguExportOptions;
 
-        if ($options->isPreview()) {
+        if ($options->isContributionPreview()) {
             if ((int) ($row['supplier_id'] ?? 0) !== (int) $options->previewSupplierId) {
                 return;
             }
 
+            $code = (string) ($row['skip_reason'] ?? 'unknown');
+            $this->previewSkippedByReason[$code] = ($this->previewSkippedByReason[$code] ?? 0) + 1;
+            if (in_array($code, ['duplicate_ean', 'duplicate_sku'], true)) {
+                $this->previewDeduplicated++;
+            }
+        } elseif ($options->isCombinedPreview()) {
             $code = (string) ($row['skip_reason'] ?? 'unknown');
             $this->previewSkippedByReason[$code] = ($this->previewSkippedByReason[$code] ?? 0) + 1;
             if (in_array($code, ['duplicate_ean', 'duplicate_sku'], true)) {
